@@ -1,0 +1,69 @@
+const express = require('express');
+const cron = require('node-cron');
+const { syncInventory } = require('./modules/inventorySync');
+const { importOrders } = require('./modules/orderImport');
+const { handleFulfillmentWebhook } = require('./modules/trackingExport');
+const { getLogs, addLog } = require('./logger');
+const crypto = require('crypto');
+
+const app = express();
+app.use(express.raw({ type: 'application/json' })); // raw body needed for HMAC
+
+const INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30');
+
+// --- Cron Jobs ---
+cron.schedule(`*/${INTERVAL} * * * *`, async () => {
+  await syncInventory();
+  await importOrders();
+});
+
+// --- Webhook: Fulfillment Created ---
+app.post('/webhooks/fulfillment-created', async (req, res) => {
+  const hmac = req.headers['x-shopify-hmac-sha256'];
+  const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
+  const digest = crypto.createHmac('sha256', secret).update(req.body).digest('base64');
+  if (digest !== hmac) {
+    return res.status(401).send('Unauthorized');
+  }
+  const payload = JSON.parse(req.body);
+  res.status(200).send('OK'); // respond immediately
+  await handleFulfillmentWebhook(payload);
+});
+
+// --- Manual Triggers ---
+app.post('/sync/inventory', async (req, res) => {
+  res.json({ triggered: true });
+  await syncInventory();
+});
+
+app.post('/sync/orders', async (req, res) => {
+  res.json({ triggered: true });
+  await importOrders();
+});
+
+// --- Logs ---
+app.get('/logs', (req, res) => {
+  const { module, status } = req.query;
+  let logs = getLogs();
+  if (module) logs = logs.filter(l => l.module === module);
+  if (status) logs = logs.filter(l => l.status === status);
+  res.json(logs);
+});
+
+// --- Health ---
+app.get('/health', (req, res) => {
+  const logs = getLogs();
+  const last24h = Date.now() - 86400000;
+  const recent = logs.filter(l => new Date(l.timestamp).getTime() > last24h);
+  res.json({
+    status: 'ok',
+    modules: ['inventory_sync', 'order_import', 'tracking_export'].map(m => ({
+      module: m,
+      successes: recent.filter(l => l.module === m && l.status === 'success').length,
+      errors: recent.filter(l => l.module === m && l.status === 'error').length,
+      last_run: recent.filter(l => l.module === m).at(0)?.timestamp || null
+    }))
+  });
+});
+
+app.listen(process.env.PORT || 3000, () => console.log('Tradebyte bridge running'));
