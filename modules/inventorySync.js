@@ -2,6 +2,15 @@ const SftpClient = require('ssh2-sftp-client');
 const { stringify } = require('csv-stringify/sync');
 const { addLog } = require('../logger');
 
+const json = await res.json();
+
+// Add this debug check
+if (!json.data || !json.data.location) {
+  throw new Error(`Shopify API error: ${JSON.stringify(json.errors || json)}`);
+}
+
+const levels = json.data.location.inventoryLevels;
+
 const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2024-01/graphql.json`;
 const LOCATION_ID = 'gid://shopify/Location/12786437'; // Texas warehouse
 const BUFFER = parseInt(process.env.INVENTORY_BUFFER || '2');
