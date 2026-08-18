@@ -4,7 +4,7 @@ const { addLog } = require('../logger');
 
 const json = await res.json();
 
-// Add this debug check
+// Add this debug check 
 if (!json.data || !json.data.location) {
   throw new Error(`Shopify API error: ${JSON.stringify(json.errors || json)}`);
 }
