@@ -2,17 +2,8 @@ const SftpClient = require('ssh2-sftp-client');
 const { stringify } = require('csv-stringify/sync');
 const { addLog } = require('../logger');
 
-const json = await res.json();
-
-// Add this debug check 
-if (!json.data || !json.data.location) {
-  throw new Error(`Shopify API error: ${JSON.stringify(json.errors || json)}`);
-}
-
-const levels = json.data.location.inventoryLevels;
-
-const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2024-01/graphql.json`;
-const LOCATION_ID = 'gid://shopify/Location/12786437'; // Texas warehouse
+const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
+const LOCATION_ID = 'gid://shopify/Location/12786437';
 const BUFFER = parseInt(process.env.INVENTORY_BUFFER || '2');
 
 async function fetchInventory() {
@@ -24,7 +15,7 @@ async function fetchInventory() {
           pageInfo { hasNextPage endCursor }
           edges { node {
             available
-            item { sku variant { id } }
+            item { sku }
           }}
         }
       }
@@ -37,8 +28,11 @@ async function fetchInventory() {
       },
       body: JSON.stringify({ query })
     });
-    const { data } = await res.json();
-    const levels = data.location.inventoryLevels;
+    const json = await res.json();
+    if (!json.data || !json.data.location) {
+      throw new Error(`Shopify API error: ${JSON.stringify(json.errors || json)}`);
+    }
+    const levels = json.data.location.inventoryLevels;
     items.push(...levels.edges.map(e => e.node));
     hasNext = levels.pageInfo.hasNextPage;
     cursor = levels.pageInfo.endCursor;
@@ -52,11 +46,15 @@ async function syncInventory() {
   try {
     const items = await fetchInventory();
     const rows = items
-      .filter(i => i.item.sku)
-      .map(i => ({ sku: i.item.sku, quantity: Math.max(0, i.available - BUFFER), timestamp: new Date().toISOString() }));
+      .filter(i => i.item && i.item.sku)
+      .map(i => ({
+        sku: i.item.sku,
+        quantity: Math.max(0, i.available - BUFFER),
+        timestamp: new Date().toISOString()
+      }));
 
     const csv = stringify(rows, { header: true });
-    const filename = `inventory_${new Date().toISOString().replace(/[-:T]/g, '').slice(0,15)}.csv`;
+    const filename = `inventory_${new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0,15)}.csv`;
 
     await sftp.connect({
       host: process.env.TB_SFTP_HOST,
@@ -64,12 +62,11 @@ async function syncInventory() {
       password: process.env.TB_SFTP_PASSWORD
     });
     await sftp.put(Buffer.from(csv), `${process.env.TB_SFTP_IN_INVENTORY || '/in/inventory/'}${filename}`);
-
     addLog({ module: 'inventory_sync', status: 'success', message: `Uploaded ${filename}`, meta: { sku_count: rows.length, filename } });
   } catch (err) {
     addLog({ module: 'inventory_sync', status: 'error', message: err.message });
   } finally {
-    await sftp.end();
+    await sftp.end().catch(() => {});
   }
 }
 
