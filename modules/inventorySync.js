@@ -10,16 +10,17 @@ async function fetchInventory() {
   let items = [], cursor = null, hasNext = true;
   while (hasNext) {
     const query = `{
-      location(id: "${LOCATION_ID}") {
-        inventoryLevels(first: 250${cursor ? `, after: "${cursor}"` : ''}) {
-          pageInfo { hasNextPage endCursor }
-          edges { node {
-            available
-            item { sku }
-          }}
-        }
-      }
-    }`;
+  location(id: "${LOCATION_ID}") {
+    inventoryLevels(first: 250${cursor ? `, after: "${cursor}"` : ''}) {
+      pageInfo { hasNextPage endCursor }
+      edges { node {
+        quantities(names: ["available"]) { name quantity }
+        item { sku }
+      }}
+    }
+  }
+}`;
+
     const res = await fetch(SHOPIFY_URL, {
       method: 'POST',
       headers: {
@@ -33,7 +34,11 @@ async function fetchInventory() {
       throw new Error(`Shopify API error: ${JSON.stringify(json.errors || json)}`);
     }
     const levels = json.data.location.inventoryLevels;
-    items.push(...levels.edges.map(e => e.node));
+    items.push(...levels.edges.map(e => {
+  const availableQty = e.node.quantities?.find(q => q.name === 'available')?.quantity ?? 0;
+  return { sku: e.node.item?.sku, available: availableQty };
+}));
+
     hasNext = levels.pageInfo.hasNextPage;
     cursor = levels.pageInfo.endCursor;
   }
