@@ -11,32 +11,7 @@ app.use(express.raw({ type: 'application/json' }));
 
 const INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30');
 
-// --- Auto-register Shopify webhook on startup ---
-async function registerWebhook() {
-  try {
-    const res = await fetch(`https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/webhooks.json`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
-      },
-      body: JSON.stringify({ webhook: {
-        topic: 'inventory_shipments/create',
-        address: `https://tradebyte-bridge-production.up.railway.app/webhooks/fulfillment-created`,
-        format: 'json'
-      }})
-    });
-    const json = await res.json();
-    if (json.webhook) {
-      console.log(`✅ Webhook registered: ID ${json.webhook.id}, topic: ${json.webhook.topic}`);
-    } else if (json.errors) {
-      // Already exists = not a real error
-      console.log('ℹ️ Webhook registration response:', JSON.stringify(json));
-    }
-  } catch (err) {
-    console.error('❌ Webhook registration failed:', err.message);
-  }
-}
+
 
 // --- Cron Jobs ---
 cron.schedule(`*/${INTERVAL} * * * *`, async () => {
