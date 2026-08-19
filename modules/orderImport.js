@@ -8,7 +8,13 @@ async function createShopifyOrder(order) {
   const mutation = `
     mutation orderCreate($order: OrderCreateOrderInput!) {
       orderCreate(order: $order) {
-        order { id name }
+        order { 
+          id 
+          name
+          totalPriceSet { shopMoney { amount currencyCode } }
+          customer { firstName lastName email }
+          lineItems(first: 10) { edges { node { title quantity } } }
+        }
         userErrors { field message }
       }
     }`;
@@ -22,6 +28,7 @@ async function createShopifyOrder(order) {
   });
   return res.json();
 }
+
 
 async function importOrders() {
   addLog({ module: 'order_import', status: 'info', message: 'Checking for new orders' });
@@ -67,7 +74,23 @@ async function importOrders() {
           };
           const result = await createShopifyOrder(orderInput);
           const created = result.data?.orderCreate?.order;
-          addLog({ module: 'order_import', status: 'success', message: `Created order ${created?.name}`, meta: { shopify_order_id: created?.id } });
+                  addLog({
+                    module: 'order_import',
+                    status: 'success',
+                    message: `Created order ${created?.name}`,
+                    meta: {
+                      shopify_order_id: created?.id,
+                      order_name: created?.name,
+                      customer_name: `${created?.customer?.firstName || row.first_name} ${created?.customer?.lastName || row.last_name}`,
+                      email: created?.customer?.email || row.email,
+                      total_price: created?.totalPriceSet?.shopMoney?.amount || row.price,
+                      currency: created?.totalPriceSet?.shopMoney?.currencyCode || 'USD',
+                      item_count: created?.lineItems?.edges?.length || 1,
+                      fulfillment_status: 'unfulfilled',
+                      imported_at: new Date().toISOString()
+                    }
+                  });
+
         }
 
         // Archive the file
