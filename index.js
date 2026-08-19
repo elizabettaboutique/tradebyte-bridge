@@ -21,7 +21,7 @@ async function registerWebhook() {
         'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
       },
       body: JSON.stringify({ webhook: {
-        topic: 'fulfillments/create',
+        topic: 'inventory_shipments/create',
         address: `https://tradebyte-bridge-production.up.railway.app/webhooks/fulfillment-created`,
         format: 'json'
       }})
