@@ -71,5 +71,5 @@ app.get('/health', (req, res) => {
 
 app.listen(process.env.PORT || 3000, async () => {
   console.log('Tradebyte bridge running');
-  await registerWebhook();
+  
 });
