@@ -1,26 +1,26 @@
 const SftpClient = require('ssh2-sftp-client');
-const { stringify } = require('csv-stringify/sync');
+const { XMLBuilder } = require('fast-xml-parser');
 const { addLog } = require('../logger');
 
 const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
 const LOCATION_ID = 'gid://shopify/Location/12786437';
 const BUFFER = parseInt(process.env.INVENTORY_BUFFER || '2');
+const WAREHOUSE_KEY = process.env.TB_WAREHOUSE_KEY || 'whTexas'; // TB.One warehouse key name
 
 async function fetchInventory() {
   let items = [], cursor = null, hasNext = true;
   while (hasNext) {
     const query = `{
-  location(id: "${LOCATION_ID}") {
-    inventoryLevels(first: 250${cursor ? `, after: "${cursor}"` : ''}) {
-      pageInfo { hasNextPage endCursor }
-      edges { node {
-        quantities(names: ["available"]) { name quantity }
-        item { sku }
-      }}
-    }
-  }
-}`;
-
+      location(id: "${LOCATION_ID}") {
+        inventoryLevels(first: 250${cursor ? `, after: "${cursor}"` : ''}) {
+          pageInfo { hasNextPage endCursor }
+          edges { node {
+            quantities(names: ["available"]) { name quantity }
+            item { sku }
+          }}
+        }
+      }
+    }`;
     const res = await fetch(SHOPIFY_URL, {
       method: 'POST',
       headers: {
@@ -30,19 +30,44 @@ async function fetchInventory() {
       body: JSON.stringify({ query })
     });
     const json = await res.json();
-    if (!json.data || !json.data.location) {
+    if (!json.data?.location) {
       throw new Error(`Shopify API error: ${JSON.stringify(json.errors || json)}`);
     }
     const levels = json.data.location.inventoryLevels;
     items.push(...levels.edges.map(e => {
-  const availableQty = e.node.quantities?.find(q => q.name === 'available')?.quantity ?? 0;
-  return { sku: e.node.item?.sku, available: availableQty };
-}));
-
+      const availableQty = e.node.quantities?.find(q => q.name === 'available')?.quantity ?? 0;
+      return { sku: e.node.item?.sku, available: availableQty };
+    }));
     hasNext = levels.pageInfo.hasNextPage;
     cursor = levels.pageInfo.endCursor;
   }
   return items;
+}
+
+function buildXml(items) {
+  const builder = new XMLBuilder({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    format: true
+  });
+
+  const articles = items
+    .filter(i => i.sku)
+    .map(i => ({
+      A_NR: i.sku,
+      A_STOCK: {
+        '@_identifier': 'name',
+        '@_key': WAREHOUSE_KEY,
+        '#text': Math.max(0, i.available - BUFFER)
+      }
+    }));
+
+  return builder.build({
+    TBSTOCK: {
+      '@_changedate': Math.floor(Date.now() / 1000),
+      ARTICLE: articles
+    }
+  });
 }
 
 async function syncInventory() {
@@ -50,24 +75,25 @@ async function syncInventory() {
   const sftp = new SftpClient();
   try {
     const items = await fetchInventory();
-    const rows = items
-      .filter(i => i.item && i.item.sku)
-      .map(i => ({
-        sku: i.item.sku,
-        quantity: Math.max(0, i.available - BUFFER),
-        timestamp: new Date().toISOString()
-      }));
-
-    const csv = stringify(rows, { header: true });
-    const filename = `inventory_${new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0,15)}.csv`;
+    const xml = buildXml(items);
+    const skuCount = items.filter(i => i.sku).length;
+    const filename = `stock_${Math.floor(Date.now() / 1000)}.xml`;
 
     await sftp.connect({
       host: process.env.TB_SFTP_HOST,
       username: process.env.TB_SFTP_USER,
       password: process.env.TB_SFTP_PASSWORD
     });
-    await sftp.put(Buffer.from(csv), `${process.env.TB_SFTP_IN_INVENTORY || '/in/inventory/'}${filename}`);
-    addLog({ module: 'inventory_sync', status: 'success', message: `Uploaded ${filename}`, meta: { sku_count: rows.length, filename } });
+
+    const dir = process.env.TB_SFTP_IN_INVENTORY || '/in/inventory/';
+    await sftp.put(Buffer.from(xml), `${dir}${filename}`);
+
+    addLog({
+      module: 'inventory_sync',
+      status: 'success',
+      message: `Uploaded ${filename}`,
+      meta: { sku_count: skuCount, filename, warehouse: WAREHOUSE_KEY }
+    });
   } catch (err) {
     addLog({ module: 'inventory_sync', status: 'error', message: err.message });
   } finally {
