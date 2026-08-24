@@ -28,8 +28,6 @@ function buildShipXml(payload) {
     format: true
   });
 
-  // Extract TB_ORDER_ID from order metafields or note
-  // The TB_ORDER_ID comes from the original order import
   const tbOrderId = payload.tb_order_id;
   const tbOrderItemId = payload.tb_order_item_id;
   const trackingNumber = payload.tracking_number || payload.tracking_numbers?.[0];
@@ -54,6 +52,39 @@ function buildShipXml(payload) {
   return builder.build({ MESSAGE: message });
 }
 
+async function fetchTbOrderIds(shopifyOrderId) {
+  const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
+  try {
+    const query = `{
+      order(id: "gid://shopify/Order/${shopifyOrderId}") {
+        metafields(namespace: "tradebyte", first: 10) {
+          edges { node { key value } }
+        }
+      }
+    }`;
+    const res = await fetch(SHOPIFY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
+      },
+      body: JSON.stringify({ query })
+    });
+    const json = await res.json();
+    const edges = json.data?.order?.metafields?.edges || [];
+    const tbOrderId = edges.find(e => e.node.key === 'tb_id')?.node?.value || null;
+    const tbOrderItemId = edges.find(e => e.node.key === 'channel_no')?.node?.value || null;
+    return { tbOrderId, tbOrderItemId };
+  } catch (err) {
+    addLog({
+      module: 'tracking_export',
+      status: 'error',
+      message: `fetchTbOrderIds failed: ${err.message}`
+    });
+    return { tbOrderId: null, tbOrderItemId: null };
+  }
+}
+
 async function handleFulfillmentWebhook(payload) {
   addLog({
     module: 'tracking_export',
@@ -74,7 +105,6 @@ async function handleFulfillmentWebhook(payload) {
       return;
     }
 
-    // Fetch TB_ORDER_ID and TB_ORDER_ITEM_ID from Shopify order metafields
     const tbIds = await fetchTbOrderIds(payload.order_id);
     if (!tbIds.tbOrderId) {
       addLog({
@@ -128,6 +158,4 @@ async function handleFulfillmentWebhook(payload) {
   }
 }
 
-async function fetchTbOrderIds(shopifyOrderId) {
-  const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
-  try
+module.exports = { handleFulfillmentWebhook };
