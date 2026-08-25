@@ -108,14 +108,17 @@ async function importOrders() {
       password: process.env.TB_SFTP_PASSWORD
     });
 
-    const dir = process.env.TB_SFTP_OUT_ORDERS || '/out/orders/';
+    const dir = process.env.TB_SFTP_OUT_ORDERS || '/out/';
     const files = await sftp.list(dir);
-    const xmlFiles = files.filter(f => f.name.endsWith('.xml'));
-
-    if (xmlFiles.length === 0) {
-      addLog({ module: 'order_import', status: 'info', message: 'No order files found' });
-      return;
-    }
+    // Accept TB.One order export formats: TBORDER_xxx.xml, ORDER_xxx.xml, or any .xml
+const xmlFiles = files.filter(f =>
+  f.name.endsWith('.xml') &&
+  !f.name.startsWith('_done') &&
+  !f.name.startsWith('_ignore') &&
+  !f.name.startsWith('_error') &&
+  !f.name.startsWith('_archived') &&
+  !f.name.startsWith('_unsupported')
+);
 
     for (const file of xmlFiles) {
       const filePath = `${dir}${file.name}`;
@@ -163,10 +166,10 @@ async function importOrders() {
           }
         }
 
-        // Archive processed file
-        const archiveDir = process.env.TB_SFTP_ARCHIVE_ORDERS || '/out/orders/archive/';
+        // Archive processed file to /archiv/ (TB.One spelling)
+        const archiveDir = process.env.TB_SFTP_ARCHIVE_ORDERS || '/archiv/';
         await sftp.rename(filePath, `${archiveDir}${file.name}`).catch(async () => {
-          await sftp.delete(filePath); // fallback: delete if archive folder doesn't exist
+          await sftp.delete(filePath); // fallback: delete if rename fails
         });
 
       } catch (fileErr) {
