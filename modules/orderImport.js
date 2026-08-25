@@ -112,13 +112,10 @@ async function importOrders() {
     const files = await sftp.list(dir);
     // Accept TB.One order export formats: TBORDER_xxx.xml, ORDER_xxx.xml, or any .xml
 const xmlFiles = files.filter(f =>
-  f.name.endsWith('.xml') &&
-  !f.name.startsWith('_done') &&
-  !f.name.startsWith('_ignore') &&
-  !f.name.startsWith('_error') &&
-  !f.name.startsWith('_archived') &&
-  !f.name.startsWith('_unsupported')
+  (f.name.startsWith('ORDER_') || f.name.startsWith('ORDERS_')) &&
+  f.name.endsWith('.xml')
 );
+
 
     for (const file of xmlFiles) {
       const filePath = `${dir}${file.name}`;
