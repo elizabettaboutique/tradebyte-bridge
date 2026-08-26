@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const app = express();
 app.use(express.raw({ type: 'application/json' }));
 
-const INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30');
+const INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '1');
 
 
 
