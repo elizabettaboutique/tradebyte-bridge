@@ -5,7 +5,6 @@ const { addLog } = require('../logger');
 const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
 const LOCATION_ID = 'gid://shopify/Location/12786437';
 const BUFFER = parseInt(process.env.INVENTORY_BUFFER || '2');
-const WAREHOUSE_KEY = process.env.TB_WAREHOUSE_KEY || 'whTexas'; // TB.One warehouse key name
 
 async function fetchInventory() {
   let items = [], cursor = null, hasNext = true;
@@ -55,11 +54,7 @@ function buildXml(items) {
     .filter(i => i.sku)
     .map(i => ({
       A_NR: i.sku,
-      A_STOCK: {
-        '@_identifier': 'name',
-        '@_key': WAREHOUSE_KEY,
-        '#text': Math.max(0, i.available - BUFFER)
-      }
+      A_STOCK: Math.max(0, i.available - BUFFER)
     }));
 
   return builder.build({
@@ -77,7 +72,7 @@ async function syncInventory() {
     const items = await fetchInventory();
     const xml = buildXml(items);
     const skuCount = items.filter(i => i.sku).length;
-    const filename = `stock_${Math.floor(Date.now() / 1000)}.xml`;
+    const filename = `TBSTOCK_${Math.floor(Date.now() / 1000)}.xml`;
 
     await sftp.connect({
       host: process.env.TB_SFTP_HOST,
@@ -85,14 +80,14 @@ async function syncInventory() {
       password: process.env.TB_SFTP_PASSWORD
     });
 
-    const dir = process.env.TB_SFTP_IN_INVENTORY || '/in/inventory/';
+    const dir = process.env.TB_SFTP_IN_INVENTORY || '/in/';
     await sftp.put(Buffer.from(xml), `${dir}${filename}`);
 
     addLog({
       module: 'inventory_sync',
       status: 'success',
       message: `Uploaded ${filename}`,
-      meta: { sku_count: skuCount, filename, warehouse: WAREHOUSE_KEY }
+      meta: { sku_count: skuCount, filename }
     });
   } catch (err) {
     addLog({ module: 'inventory_sync', status: 'error', message: err.message });
