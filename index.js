@@ -13,18 +13,28 @@ const INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '1');
 
 
 //  -----  Access Token ----
-const { verifyShopifyToken } = require('./modules/tokenManager');
+const { getValidToken, generateNewToken } = require('./modules/tokenManager');
 
-// Run token health check every hour
-cron.schedule('0 * * * *', verifyShopifyToken);
+// Generate token on startup
+generateNewToken().then(() => {
+  console.log('Initial token generated');
+}).catch(console.error);
 
-// Also check before inventory sync
-cron.schedule('* * * * *', async () => {
-  const tokenOk = await verifyShopifyToken();
-  if (tokenOk) await syncInventory();
+// Refresh token every 22 hours (2 hours before 24hr expiry)
+cron.schedule('0 */22 * * *', async () => {
+  await generateNewToken();
 });
 
-cron.schedule('* * * * *', importOrders);
+// Ensure valid token before each sync
+cron.schedule('* * * * *', async () => {
+  await getValidToken();
+  await syncInventory();
+});
+
+cron.schedule('* * * * *', async () => {
+  await getValidToken();
+  await importOrders();
+});
 
 
 
