@@ -12,6 +12,23 @@ app.use(express.raw({ type: 'application/json' }));
 const INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '1');
 
 
+//  -----  Access Token ----
+const { verifyShopifyToken } = require('./modules/tokenManager');
+
+// Run token health check every hour
+cron.schedule('0 * * * *', verifyShopifyToken);
+
+// Also check before inventory sync
+cron.schedule('* * * * *', async () => {
+  const tokenOk = await verifyShopifyToken();
+  if (tokenOk) await syncInventory();
+});
+
+cron.schedule('* * * * *', importOrders);
+
+
+
+
 
 // --- Cron Jobs ---
 cron.schedule(`*/${INTERVAL} * * * *`, async () => {
