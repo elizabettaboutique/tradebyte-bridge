@@ -6,6 +6,15 @@ const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-0
 const LOCATION_ID = 'gid://shopify/Location/12786437';
 const BUFFER = parseInt(process.env.INVENTORY_BUFFER || '2');
 
+function getTbFilename(prefix) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const uid = Math.floor(Date.now() / 1000);
+  return `${date}_${time}_${prefix}_${uid}.xml`;
+}
+
 async function fetchInventory() {
   let items = [], cursor = null, hasNext = true;
   while (hasNext) {
@@ -72,7 +81,7 @@ async function syncInventory() {
     const items = await fetchInventory();
     const xml = buildXml(items);
     const skuCount = items.filter(i => i.sku).length;
-    const filename = `TBSTOCK_${Math.floor(Date.now() / 1000)}.xml`;
+    const filename = getTbFilename('TBSTOCK');
 
     await sftp.connect({
       host: process.env.TB_SFTP_HOST,
