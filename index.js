@@ -26,12 +26,12 @@ cron.schedule('0 */22 * * *', async () => {
 });
 
 // Ensure valid token before each sync
-cron.schedule('* * * * *', async () => {
+cron.schedule('*/30 * * * *', async () => {
   await getValidToken();
   await syncInventory();
 });
 
-cron.schedule('* * * * *', async () => {
+cron.schedule('*/30 * * * *', async () => {
   await getValidToken();
   await importOrders();
 });
