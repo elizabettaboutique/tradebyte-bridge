@@ -110,6 +110,15 @@ async function importOrders() {
 
     const dir = process.env.TB_SFTP_OUT_ORDERS || '/out/';
     const files = await sftp.list(dir);
+
+
+    addLog({
+  module: 'order_import',
+  status: 'info',
+  message: `Files in ${dir}: ${files.map(f => f.name).join(', ') || 'EMPTY'}`
+});
+
+    
     // Accept TB.One order export formats: TBORDER_xxx.xml, ORDER_xxx.xml, or any .xml
 const xmlFiles = files.filter(f =>
   (f.name.startsWith('ORDER_') || f.name.startsWith('ORDERS_')) &&
