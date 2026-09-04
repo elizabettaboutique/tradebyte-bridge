@@ -12,7 +12,7 @@ function getTbFilename(prefix) {
   const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
   const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   const uid = Math.floor(Date.now() / 1000);
-  return `${date}_${time}_${prefix}_${uid}.xml`;
+  return `TBCAT_stock_${uid}.xml`;
 }
 
 async function fetchInventory() {
