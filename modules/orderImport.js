@@ -37,6 +37,9 @@ async function getVariantBySkuOrEan(sku, ean) {
   return result2.data?.productVariants?.edges?.[0]?.node || null;
 }
 
+
+
+
 async function createShopifyOrder(order) {
   const orderData = order.ORDER_DATA;
   const shipTo = order.SHIP_TO;
@@ -58,12 +61,7 @@ async function createShopifyOrder(order) {
     lineItems.push({
       variantId: variant.id,
       quantity: parseInt(item.QUANTITY),
-      priceSet: {
-        shopMoney: {
-          amount: String(item.ITEM_PRICE),
-          currencyCode: 'EUR'
-        }
-      }
+      
     });
   }
 
@@ -114,7 +112,6 @@ async function createShopifyOrder(order) {
       phone: null,
       note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO}`,
       tags: ['tradebyte', 'farfetch', orderData.CHANNEL_SIGN],
-      financialStatus: 'PAID',
       shippingLines: [
         {
           title: 'Farfetch Shipping',
@@ -209,6 +206,15 @@ async function importOrders() {
         const channelNo = order.ORDER_DATA?.CHANNEL_NO;
         addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
 
+
+addLog({
+  module: 'order_import',
+  status: 'info',
+  message: 'Shopify mutation result',
+  meta: JSON.stringify(result)  // log the FULL response
+});
+
+        
         const shopifyOrder = await createShopifyOrder(order);
         if (shopifyOrder) {
           addLog({
