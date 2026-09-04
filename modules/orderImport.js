@@ -203,28 +203,20 @@ async function importOrders() {
       const orders = Array.isArray(orderList.ORDER) ? orderList.ORDER : [orderList.ORDER];
 
       for (const order of orders) {
-        const channelNo = order.ORDER_DATA?.CHANNEL_NO;
-        addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
+  const channelNo = order.ORDER_DATA?.CHANNEL_NO;
+  addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
 
+  const shopifyOrder = await createShopifyOrder(order);
+  if (shopifyOrder) {
+    addLog({
+      module: 'order_import',
+      status: 'success',
+      message: `Order created: ${shopifyOrder.name}`,
+      meta: { id: shopifyOrder.id, total: shopifyOrder.totalPriceSet?.shopMoney?.amount }
+    });
+  }
+}
 
-addLog({
-  module: 'order_import',
-  status: 'info',
-  message: 'Shopify mutation result',
-  meta: JSON.stringify(result)  // log the FULL response
-});
-
-        
-        const shopifyOrder = await createShopifyOrder(order);
-        if (shopifyOrder) {
-          addLog({
-            module: 'order_import',
-            status: 'success',
-            message: `Order created: ${shopifyOrder.name}`,
-            meta: { id: shopifyOrder.id, total: shopifyOrder.totalPriceSet?.shopMoney?.amount }
-          });
-        }
-      }
 
       // Move to archiv after processing
       await sftp.rename(remotePath, `${SFTP_ARCHIV}${file.name}`);
