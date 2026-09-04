@@ -19,23 +19,22 @@ async function shopifyRequest(query, variables) {
 }
 
 async function getVariantBySkuOrEan(sku, ean) {
-  // Try SKU first
   const result = await shopifyRequest(`{
-    productVariants(first: 1, query: "sku:${sku}") {
+    productVariants(first: 1, query: "sku:'${sku}'") {
       edges { node { id title price } }
     }
   }`);
   const variant = result.data?.productVariants?.edges?.[0]?.node;
   if (variant) return variant;
 
-  // Fallback to EAN (barcode)
   const result2 = await shopifyRequest(`{
-    productVariants(first: 1, query: "barcode:${ean}") {
+    productVariants(first: 1, query: "barcode:'${ean}'") {
       edges { node { id title price } }
     }
   }`);
   return result2.data?.productVariants?.edges?.[0]?.node || null;
 }
+
 
 
 
