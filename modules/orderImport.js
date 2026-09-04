@@ -3,104 +3,172 @@ const { XMLParser } = require('fast-xml-parser');
 const { addLog } = require('../logger');
 
 const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
+const SFTP_OUT = process.env.TB_SFTP_OUT || '/out/';
+const SFTP_ARCHIV = process.env.TB_SFTP_ARCHIV || '/archiv/';
 
-async function createShopifyOrder(order) {
-  const mutation = `
-    mutation orderCreate($order: OrderCreateOrderInput!) {
-      orderCreate(order: $order) {
-        order {
-          id
-          name
-          totalPriceSet { shopMoney { amount currencyCode } }
-          customer { firstName lastName email }
-          lineItems(first: 10) { edges { node { title quantity } } }
-        }
-        userErrors { field message }
-      }
-    }`;
+async function shopifyRequest(query, variables) {
   const res = await fetch(SHOPIFY_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
     },
-    body: JSON.stringify({ query: mutation, variables: { order } })
+    body: JSON.stringify({ query, variables })
   });
   return res.json();
 }
 
-function buildShopifyOrder(tbOrder) {
-  const data = tbOrder.ORDER_DATA || {};
-  const sellTo = tbOrder.SELL_TO || {};
-  const shipTo = tbOrder.SHIP_TO || sellTo;
-  const items = tbOrder.ITEMS?.ITEM
-    ? Array.isArray(tbOrder.ITEMS.ITEM) ? tbOrder.ITEMS.ITEM : [tbOrder.ITEMS.ITEM]
-    : [];
+async function getVariantBySkuOrEan(sku, ean) {
+  // Try SKU first
+  const result = await shopifyRequest(`{
+    productVariants(first: 1, query: "sku:${sku}") {
+      edges { node { id title price } }
+    }
+  }`);
+  const variant = result.data?.productVariants?.edges?.[0]?.node;
+  if (variant) return variant;
 
-  // Farfetch order number from CHANNEL_NO — critical for warehouse
-  const farfetchOrderNo = data.CHANNEL_NO || data.CHANNEL_ID || 'unknown';
-  const orderNote = `Farfetch-${farfetchOrderNo}`;
+  // Fallback to EAN (barcode)
+  const result2 = await shopifyRequest(`{
+    productVariants(first: 1, query: "barcode:${ean}") {
+      edges { node { id title price } }
+    }
+  }`);
+  return result2.data?.productVariants?.edges?.[0]?.node || null;
+}
 
-  const lineItems = items.map(item => ({
-    title: item.BILLING_TEXT || item.SKU || 'Unknown Item',
-    quantity: parseInt(item.QUANTITY) || 1,
-    priceSet: {
-      shopMoney: {
-        amount: String(item.ITEM_PRICE || '0.00'),
-        currencyCode: 'EUR'
+async function createShopifyOrder(order) {
+  const orderData = order.ORDER_DATA;
+  const shipTo = order.SHIP_TO;
+  const sellTo = order.SELL_TO;
+  const items = Array.isArray(order.ITEMS.ITEM) ? order.ITEMS.ITEM : [order.ITEMS.ITEM];
+
+  // Resolve line items
+  const lineItems = [];
+  for (const item of items) {
+    const variant = await getVariantBySkuOrEan(item.SKU, item.EAN);
+    if (!variant) {
+      addLog({
+        module: 'order_import',
+        status: 'error',
+        message: `Variant not found for SKU: ${item.SKU} / EAN: ${item.EAN}`
+      });
+      continue;
+    }
+    lineItems.push({
+      variantId: variant.id,
+      quantity: parseInt(item.QUANTITY),
+      priceSet: {
+        shopMoney: {
+          amount: String(item.ITEM_PRICE),
+          currencyCode: 'EUR'
+        }
       }
-    },
-    requiresShipping: true,
-    sku: item.SKU || item.EAN || ''
-  }));
+    });
+  }
 
-  return {
-    note: orderNote,
-    tags: ['tradebyte', 'farfetch'],
-    email: sellTo.EMAIL || '',
-    phone: sellTo.PHONE_PRIVATE || '',
-    financialStatus: 'PAID',
-    lineItems,
-    billingAddress: {
-      firstName: sellTo.FIRSTNAME || sellTo.NAME || '',
-      lastName: sellTo.LASTNAME || '',
-      address1: sellTo.STREET_NO || '',
-      address2: sellTo.STREET_EXTENSION || '',
-      zip: sellTo.ZIP || '',
-      city: sellTo.CITY || '',
-      countryCode: sellTo.COUNTRY || 'DE'
-    },
-    shippingAddress: {
-      firstName: shipTo.FIRSTNAME || shipTo.NAME || '',
-      lastName: shipTo.LASTNAME || '',
-      address1: shipTo.STREET_NO || '',
-      address2: shipTo.STREET_EXTENSION || '',
-      zip: shipTo.ZIP || '',
-      city: shipTo.CITY || '',
-      countryCode: shipTo.COUNTRY || 'DE'
-    },
-    metafields: [
-      {
-        namespace: 'tradebyte',
-        key: 'tb_id',
-        value: String(data.TB_ID || ''),
-        type: 'single_line_text_field'
+  if (lineItems.length === 0) {
+    addLog({
+      module: 'order_import',
+      status: 'error',
+      message: `No valid line items found for order ${orderData.CHANNEL_NO} — skipping`
+    });
+    return null;
+  }
+
+  const mutation = `
+    mutation orderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
+      orderCreate(order: $order, options: $options) {
+        userErrors { field message }
+        order {
+          id
+          name
+          totalPriceSet { shopMoney { amount } }
+        }
+      }
+    }
+  `;
+
+  const variables = {
+    order: {
+      lineItems,
+      currency: 'EUR',
+      presentmentCurrency: 'EUR',
+      shippingAddress: {
+        firstName: shipTo.FIRSTNAME,
+        lastName: shipTo.LASTNAME,
+        address1: shipTo.STREET_NO,
+        zip: String(shipTo.ZIP),
+        city: shipTo.CITY,
+        countryCode: shipTo.COUNTRY
       },
-      {
-        namespace: 'tradebyte',
-        key: 'channel_no',
-        value: String(farfetchOrderNo),
-        type: 'single_line_text_field'
-      }
-    ]
+      billingAddress: {
+        firstName: sellTo.FIRSTNAME,
+        lastName: sellTo.LASTNAME,
+        address1: sellTo.STREET_NO,
+        zip: String(sellTo.ZIP),
+        city: sellTo.CITY,
+        countryCode: sellTo.COUNTRY
+      },
+      email: sellTo.EMAIL,
+      phone: null,
+      note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO}`,
+      tags: ['tradebyte', 'farfetch', orderData.CHANNEL_SIGN],
+      financialStatus: 'PAID',
+      shippingLines: [
+        {
+          title: 'Farfetch Shipping',
+          priceSet: {
+            shopMoney: {
+              amount: String(order.SHIPMENT?.PRICE || '0'),
+              currencyCode: 'EUR'
+            }
+          }
+        }
+      ],
+      metafields: [
+        {
+          namespace: 'tradebyte',
+          key: 'tb_order_id',
+          value: String(orderData.TB_ID),
+          type: 'single_line_text_field'
+        },
+        {
+          namespace: 'tradebyte',
+          key: 'channel_order_no',
+          value: String(orderData.CHANNEL_NO),
+          type: 'single_line_text_field'
+        },
+        {
+          namespace: 'tradebyte',
+          key: 'channel_sign',
+          value: String(orderData.CHANNEL_SIGN),
+          type: 'single_line_text_field'
+        }
+      ]
+    },
+    options: {
+      inventoryBehaviour: 'DECREMENT_IGNORING_POLICY'
+    }
   };
+
+  const result = await shopifyRequest(mutation, variables);
+
+  if (result.data?.orderCreate?.userErrors?.length > 0) {
+    addLog({
+      module: 'order_import',
+      status: 'error',
+      message: `Shopify userErrors: ${JSON.stringify(result.data.orderCreate.userErrors)}`
+    });
+    return null;
+  }
+
+  return result.data?.orderCreate?.order;
 }
 
 async function importOrders() {
   addLog({ module: 'order_import', status: 'info', message: 'Starting order import' });
   const sftp = new SftpClient();
-  const parser = new XMLParser({ ignoreAttributes: false });
-
   try {
     await sftp.connect({
       host: process.env.TB_SFTP_HOST,
@@ -108,89 +176,56 @@ async function importOrders() {
       password: process.env.TB_SFTP_PASSWORD
     });
 
-    const dir = process.env.TB_SFTP_OUT_ORDERS || '/out/';
-    const files = await sftp.list(dir);
-
+    const files = await sftp.list(SFTP_OUT);
+    const orderFiles = files.filter(f => f.name.startsWith('ORDERS_') && f.name.endsWith('.xml'));
 
     addLog({
-  module: 'order_import',
-  status: 'info',
-  message: `Files in ${dir}: ${files.map(f => f.name).join(', ') || 'EMPTY'}`
-});
+      module: 'order_import',
+      status: 'info',
+      message: `Files in /out/: ${orderFiles.map(f => f.name).join(', ') || 'EMPTY'}`
+    });
 
-    
-    // Accept TB.One order export formats: TBORDER_xxx.xml, ORDER_xxx.xml, or any .xml
-const xmlFiles = files.filter(f =>
-  (f.name.startsWith('ORDER_') || f.name.startsWith('ORDERS_')) &&
-  f.name.endsWith('.xml')
-);
+    for (const file of orderFiles) {
+      const remotePath = `${SFTP_OUT}${file.name}`;
+      const chunks = [];
+      await sftp.get(remotePath, require('stream').Writable({
+        write(chunk, _, cb) { chunks.push(chunk); cb(); }
+      }));
+      const xmlContent = Buffer.concat(chunks).toString('utf8');
 
+      addLog({
+        module: 'order_import',
+        status: 'info',
+        message: `Parsing file: ${file.name}`,
+        meta: { preview: xmlContent.substring(0, 300) }
+      });
 
-    for (const file of xmlFiles) {
-      const filePath = `${dir}${file.name}`;
-      try {
-        const buffer = await sftp.get(filePath);
-        const xml = buffer.toString('utf8');
-        const parsed = parser.parse(xml);
+      const parser = new XMLParser({ ignoreAttributes: false, parseTagValue: true });
+      const parsed = parser.parse(xmlContent);
+      const orderList = parsed.ORDER_LIST;
+      const orders = Array.isArray(orderList.ORDER) ? orderList.ORDER : [orderList.ORDER];
 
-        // Support both single ORDER and multiple ORDERs
-        const orders = parsed.ORDERS?.ORDER
-          ? Array.isArray(parsed.ORDERS.ORDER) ? parsed.ORDERS.ORDER : [parsed.ORDERS.ORDER]
-          : parsed.ORDER ? [parsed.ORDER] : [];
+      for (const order of orders) {
+        const channelNo = order.ORDER_DATA?.CHANNEL_NO;
+        addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
 
-        for (const tbOrder of orders) {
-          const shopifyOrder = buildShopifyOrder(tbOrder);
-          const result = await createShopifyOrder(shopifyOrder);
-          const created = result.data?.orderCreate?.order;
-          const errors = result.data?.orderCreate?.userErrors;
-
-          if (errors?.length > 0) {
-            addLog({
-              module: 'order_import',
-              status: 'error',
-              message: `Order creation failed: ${errors.map(e => e.message).join(', ')}`,
-              meta: { file: file.name, channel_no: tbOrder.ORDER_DATA?.CHANNEL_NO }
-            });
-          } else {
-            addLog({
-              module: 'order_import',
-              status: 'success',
-              message: `Created order ${created?.name}`,
-              meta: {
-                shopify_order_id: created?.id,
-                order_name: created?.name,
-                customer_name: `${created?.customer?.firstName || ''} ${created?.customer?.lastName || ''}`.trim(),
-                email: created?.customer?.email || '',
-                total_price: created?.totalPriceSet?.shopMoney?.amount || '',
-                currency: created?.totalPriceSet?.shopMoney?.currencyCode || 'EUR',
-                item_count: created?.lineItems?.edges?.length || 0,
-                fulfillment_status: 'unfulfilled',
-                imported_at: new Date().toISOString(),
-                farfetch_order_no: tbOrder.ORDER_DATA?.CHANNEL_NO || ''
-              }
-            });
-          }
+        const shopifyOrder = await createShopifyOrder(order);
+        if (shopifyOrder) {
+          addLog({
+            module: 'order_import',
+            status: 'success',
+            message: `Order created: ${shopifyOrder.name}`,
+            meta: { id: shopifyOrder.id, total: shopifyOrder.totalPriceSet?.shopMoney?.amount }
+          });
         }
-
-        // Archive processed file to /archiv/ (TB.One spelling)
-        const archiveDir = process.env.TB_SFTP_ARCHIVE_ORDERS || '/archiv/';
-        await sftp.rename(filePath, `${archiveDir}${file.name}`).catch(async () => {
-          await sftp.delete(filePath); // fallback: delete if rename fails
-        });
-
-      } catch (fileErr) {
-        addLog({
-          module: 'order_import',
-          status: 'error',
-          message: `Failed to process ${file.name}: ${fileErr.message}`
-        });
-        // Move to error folder
-        const errorDir = process.env.TB_SFTP_ERROR_ORDERS || '/out/orders/error/';
-        await sftp.rename(filePath, `${errorDir}${file.name}`).catch(() => {});
       }
+
+      // Move to archiv after processing
+      await sftp.rename(remotePath, `${SFTP_ARCHIV}${file.name}`);
+      addLog({ module: 'order_import', status: 'info', message: `Archived: ${file.name}` });
     }
   } catch (err) {
-    addLog({ module: 'order_import', status: 'error', message: err.message });
+    addLog({ module: 'order_import', status: 'error', message: `Import error: ${err.message}`, meta: { stack: err.stack } });
   } finally {
     await sftp.end().catch(() => {});
   }
