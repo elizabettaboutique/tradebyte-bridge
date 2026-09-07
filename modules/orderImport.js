@@ -37,7 +37,7 @@ async function getVariantBySkuOrEan(sku, ean) {
       }
     }`);
 
-    addLog({ module: 'order_import', status: 'info', message: `SKU query result`, meta: JSON.stringify(result) });
+    addLog({ module: 'order_import', status: 'info', message: 'SKU query result', meta: JSON.stringify(result) });
 
     const variant = result.data?.productVariants?.edges?.[0]?.node;
     if (variant) return variant;
@@ -48,7 +48,7 @@ async function getVariantBySkuOrEan(sku, ean) {
       }
     }`);
 
-    addLog({ module: 'order_import', status: 'info', message: `EAN query result`, meta: JSON.stringify(result2) });
+    addLog({ module: 'order_import', status: 'info', message: 'EAN query result', meta: JSON.stringify(result2) });
 
     return result2.data?.productVariants?.edges?.[0]?.node || null;
   } catch (err) {
@@ -130,18 +130,18 @@ async function createShopifyOrder(order) {
       email: sellTo.EMAIL,
       note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO}`,
       tags: ['tradebyte', 'farfetch', orderData.CHANNEL_SIGN],
-  shippingLines: [
-  {
-    title: 'Farfetch Shipping',
-    priceSet: {
-      shopMoney: {
-        amount: String(order.SHIPMENT?.PRICE || '0.00'),
-        currencyCode: merchantCurrency
-      }
-    }
-  }
-],
-
+      shippingLines: [
+        {
+          title: 'Farfetch Shipping',
+          priceSet: {
+            shopMoney: {
+              amount: String(order.SHIPMENT?.PRICE || '0.00'),
+              currencyCode: merchantCurrency
+            }
+          }
+        }
+      ]
+    },
     options: {
       inventoryBehaviour: 'DECREMENT_IGNORING_POLICY'
     }
