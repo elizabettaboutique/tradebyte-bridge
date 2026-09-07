@@ -151,6 +151,26 @@ async function createShopifyOrder(order) {
             }
           }
         }
+      ],
+      metafields: [
+        {
+          namespace: 'tradebyte',
+          key: 'tb_id',
+          value: String(orderData.TB_ID || orderData.CHANNEL_NO),
+          type: 'single_line_text_field'
+        },
+        {
+          namespace: 'tradebyte',
+          key: 'channel_no',
+          value: String(orderData.CHANNEL_NO),
+          type: 'single_line_text_field'
+        },
+        {
+          namespace: 'tradebyte',
+          key: 'channel_sign',
+          value: String(orderData.CHANNEL_SIGN),
+          type: 'single_line_text_field'
+        }
       ]
     },
     options: {
