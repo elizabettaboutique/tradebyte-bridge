@@ -15,13 +15,22 @@ async function shopifyRequest(query, variables) {
     },
     body: JSON.stringify({ query, variables })
   });
-  return res.json();
+  const json = await res.json();
+  if (!res.ok || json.errors) {
+    addLog({
+      module: 'order_import',
+      status: 'error',
+      message: 'Shopify GraphQL/API error',
+      meta: JSON.stringify(json.errors || { httpStatus: res.status, body: json })
+    });
+  }
+  return json;
 }
 
 async function getVariantBySkuOrEan(sku, ean) {
   try {
     addLog({ module: 'order_import', status: 'info', message: `Querying Shopify for SKU: ${sku}` });
-    
+
     const result = await shopifyRequest(`{
       productVariants(first: 1, query: "sku:'${sku}'") {
         edges { node { id title price } }
@@ -48,18 +57,12 @@ async function getVariantBySkuOrEan(sku, ean) {
   }
 }
 
-
-
-
-
-
 async function createShopifyOrder(order) {
   const orderData = order.ORDER_DATA;
   const shipTo = order.SHIP_TO;
   const sellTo = order.SELL_TO;
   const items = Array.isArray(order.ITEMS.ITEM) ? order.ITEMS.ITEM : [order.ITEMS.ITEM];
 
-  // Resolve line items
   const lineItems = [];
   for (const item of items) {
     const variant = await getVariantBySkuOrEan(item.SKU, item.EAN);
@@ -73,8 +76,7 @@ async function createShopifyOrder(order) {
     }
     lineItems.push({
       variantId: variant.id,
-      quantity: parseInt(item.QUANTITY),
-      
+      quantity: parseInt(item.QUANTITY)
     });
   }
 
@@ -128,12 +130,7 @@ async function createShopifyOrder(order) {
       shippingLines: [
         {
           title: 'Farfetch Shipping',
-          priceSet: {
-            shopMoney: {
-              amount: String(order.SHIPMENT?.PRICE || '0'),
-              currencyCode: 'EUR'
-            }
-          }
+          price: String(order.SHIPMENT?.PRICE || '0')
         }
       ],
       metafields: [
@@ -162,18 +159,30 @@ async function createShopifyOrder(order) {
     }
   };
 
-  const result = await shopifyRequest(mutation, variables);
+  try {
+    const result = await shopifyRequest(mutation, variables);
 
-  if (result.data?.orderCreate?.userErrors?.length > 0) {
     addLog({
       module: 'order_import',
-      status: 'error',
-      message: `Shopify userErrors: ${JSON.stringify(result.data.orderCreate.userErrors)}`
+      status: 'info',
+      message: 'Mutation result',
+      meta: JSON.stringify(result)
     });
+
+    if (result.data?.orderCreate?.userErrors?.length > 0) {
+      addLog({
+        module: 'order_import',
+        status: 'error',
+        message: `Shopify userErrors: ${JSON.stringify(result.data.orderCreate.userErrors)}`
+      });
+      return null;
+    }
+
+    return result.data?.orderCreate?.order || null;
+  } catch (err) {
+    addLog({ module: 'order_import', status: 'error', message: `Mutation exception: ${err.message}` });
     return null;
   }
-
-  return result.data?.orderCreate?.order;
 }
 
 async function importOrders() {
@@ -215,38 +224,41 @@ async function importOrders() {
       const orderList = parsed.ORDER_LIST;
       const orders = Array.isArray(orderList.ORDER) ? orderList.ORDER : [orderList.ORDER];
 
+      let anyFailed = false;
 
+      for (const order of orders) {
+        const channelNo = order.ORDER_DATA?.CHANNEL_NO;
+        addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
 
-for (const order of orders) {
-  const channelNo = order.ORDER_DATA?.CHANNEL_NO;
-  
-  addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
+        const debugItems = Array.isArray(order.ITEMS?.ITEM) ? order.ITEMS.ITEM : [order.ITEMS?.ITEM];
+        for (const item of debugItems) {
+          addLog({
+            module: 'order_import',
+            status: 'info',
+            message: `Looking up SKU: "${item?.SKU}" EAN: "${item?.EAN}"`
+          });
+        }
 
-  const debugItems = Array.isArray(order.ITEMS?.ITEM) ? order.ITEMS.ITEM : [order.ITEMS?.ITEM];
-  for (const item of debugItems) {
-    addLog({
-      module: 'order_import',
-      status: 'info',
-      message: `Looking up SKU: "${item?.SKU}" EAN: "${item?.EAN}"`
-    });
-  }
+        const shopifyOrder = await createShopifyOrder(order);
+        if (shopifyOrder) {
+          addLog({
+            module: 'order_import',
+            status: 'success',
+            message: `Order created: ${shopifyOrder.name}`,
+            meta: { id: shopifyOrder.id, total: shopifyOrder.totalPriceSet?.shopMoney?.amount }
+          });
+        } else {
+          anyFailed = true;
+        }
+      }
 
-    
-  const shopifyOrder = await createShopifyOrder(order);
-  if (shopifyOrder) {
-    addLog({
-      module: 'order_import',
-      status: 'success',
-      message: `Order created: ${shopifyOrder.name}`,
-      meta: { id: shopifyOrder.id, total: shopifyOrder.totalPriceSet?.shopMoney?.amount }
-    });
-  }
-}
-
-
-      // Move to archiv after processing
-      await sftp.rename(remotePath, `${SFTP_ARCHIV}${file.name}`);
-      addLog({ module: 'order_import', status: 'info', message: `Archived: ${file.name}` });
+      if (!anyFailed) {
+        await sftp.rename(remotePath, `${SFTP_ARCHIV}${file.name}`);
+        addLog({ module: 'order_import', status: 'info', message: `Archived: ${file.name}` });
+      } else {
+        await sftp.rename(remotePath, `${SFTP_ARCHIV}FAILED_${file.name}`);
+        addLog({ module: 'order_import', status: 'error', message: `Orders failed — moved to FAILED_${file.name}` });
+      }
     }
   } catch (err) {
     addLog({ module: 'order_import', status: 'error', message: `Import error: ${err.message}`, meta: { stack: err.stack } });
