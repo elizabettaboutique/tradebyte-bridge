@@ -19,21 +19,35 @@ async function shopifyRequest(query, variables) {
 }
 
 async function getVariantBySkuOrEan(sku, ean) {
-  const result = await shopifyRequest(`{
-    productVariants(first: 1, query: "sku:'${sku}'") {
-      edges { node { id title price } }
-    }
-  }`);
-  const variant = result.data?.productVariants?.edges?.[0]?.node;
-  if (variant) return variant;
+  try {
+    addLog({ module: 'order_import', status: 'info', message: `Querying Shopify for SKU: ${sku}` });
+    
+    const result = await shopifyRequest(`{
+      productVariants(first: 1, query: "sku:'${sku}'") {
+        edges { node { id title price } }
+      }
+    }`);
 
-  const result2 = await shopifyRequest(`{
-    productVariants(first: 1, query: "barcode:'${ean}'") {
-      edges { node { id title price } }
-    }
-  }`);
-  return result2.data?.productVariants?.edges?.[0]?.node || null;
+    addLog({ module: 'order_import', status: 'info', message: `SKU query result`, meta: JSON.stringify(result) });
+
+    const variant = result.data?.productVariants?.edges?.[0]?.node;
+    if (variant) return variant;
+
+    const result2 = await shopifyRequest(`{
+      productVariants(first: 1, query: "barcode:'${ean}'") {
+        edges { node { id title price } }
+      }
+    }`);
+
+    addLog({ module: 'order_import', status: 'info', message: `EAN query result`, meta: JSON.stringify(result2) });
+
+    return result2.data?.productVariants?.edges?.[0]?.node || null;
+  } catch (err) {
+    addLog({ module: 'order_import', status: 'error', message: `getVariantBySkuOrEan error: ${err.message}` });
+    return null;
+  }
 }
+
 
 
 
