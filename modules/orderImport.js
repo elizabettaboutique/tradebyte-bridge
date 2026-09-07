@@ -81,11 +81,21 @@ async function createShopifyOrder(order) {
       });
       continue;
     }
-    lineItems.push({
-      variantId: variant.id,
-      quantity: parseInt(item.QUANTITY)
-    });
+    const itemPrice = typeof item.ITEM_PRICE === 'object'
+  ? item.ITEM_PRICE['#text']
+  : item.ITEM_PRICE;
+
+lineItems.push({
+  variantId: variant.id,
+  quantity: parseInt(item.QUANTITY),
+  priceSet: {
+    shopMoney: {
+      amount: String(itemPrice || '0.00'),
+      currencyCode: merchantCurrency
+    }
   }
+});
+
 
   if (lineItems.length === 0) {
     addLog({
