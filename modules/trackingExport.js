@@ -76,42 +76,26 @@ async function fetchTbOrderIds(shopifyOrderId) {
     const tbOrderItemId = edges.find(e => e.node.key === 'channel_no')?.node?.value || null;
     return { tbOrderId, tbOrderItemId };
   } catch (err) {
-    addLog({
-      module: 'tracking_export',
-      status: 'error',
-      message: `fetchTbOrderIds failed: ${err.message}`
-    });
+    addLog('tracking_export', 'error', `fetchTbOrderIds failed: ${err.message}`);
     return { tbOrderId: null, tbOrderItemId: null };
   }
 }
 
 async function handleFulfillmentWebhook(payload) {
-  addLog({
-    module: 'tracking_export',
-    status: 'info',
-    message: `Processing tracking for order ${payload.order_id}`
-  });
+  addLog('tracking_export', 'info', `Processing tracking for order ${payload.order_id}`);
 
   const sftp = new SftpClient();
   try {
     const trackingNumber = payload.tracking_number || payload.tracking_numbers?.[0];
 
     if (!trackingNumber) {
-      addLog({
-        module: 'tracking_export',
-        status: 'info',
-        message: 'No tracking number yet, skipping'
-      });
+      addLog('tracking_export', 'info', 'No tracking number yet, skipping');
       return;
     }
 
     const tbIds = await fetchTbOrderIds(payload.order_id);
     if (!tbIds.tbOrderId) {
-      addLog({
-        module: 'tracking_export',
-        status: 'error',
-        message: `No TB_ORDER_ID found for Shopify order ${payload.order_id} — was this a Tradebyte order?`
-      });
+      addLog('tracking_export', 'error', `No TB_ORDER_ID for Shopify order ${payload.order_id} — was this a Tradebyte order?`);
       return;
     }
 
@@ -133,26 +117,16 @@ async function handleFulfillmentWebhook(payload) {
     const dir = process.env.TB_SFTP_IN_TRACKING || '/in/tracking/';
     await sftp.put(Buffer.from(xml), `${dir}${filename}`);
 
-    addLog({
-      module: 'tracking_export',
-      status: 'success',
-      message: `Uploaded ${filename}`,
-      meta: {
-        order: payload.order_id,
-        tb_order_id: tbIds.tbOrderId,
-        tracking: trackingNumber,
-        carrier: payload.tracking_company,
-        carrier_code: mapCarrier(payload.tracking_company),
-        filename
-      }
+    addLog('tracking_export', 'success', `Uploaded ${filename}`, {
+      order: payload.order_id,
+      tb_order_id: tbIds.tbOrderId,
+      tracking: trackingNumber,
+      carrier: payload.tracking_company,
+      carrier_code: mapCarrier(payload.tracking_company),
+      filename
     });
   } catch (err) {
-    addLog({
-      module: 'tracking_export',
-      status: 'error',
-      message: err.message,
-      meta: { order: payload.order_id }
-    });
+    addLog('tracking_export', 'error', err.message, { order: payload.order_id });
   } finally {
     await sftp.end().catch(() => {});
   }
