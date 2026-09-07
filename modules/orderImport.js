@@ -130,13 +130,18 @@ async function createShopifyOrder(order) {
       email: sellTo.EMAIL,
       note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO}`,
       tags: ['tradebyte', 'farfetch', orderData.CHANNEL_SIGN],
-      shippingLines: [
-        {
-          title: 'Farfetch Shipping',
-          price: String(order.SHIPMENT?.PRICE || '0')
-        }
-      ]
-    },
+  shippingLines: [
+  {
+    title: 'Farfetch Shipping',
+    priceSet: {
+      shopMoney: {
+        amount: String(order.SHIPMENT?.PRICE || '0.00'),
+        currencyCode: merchantCurrency
+      }
+    }
+  }
+],
+
     options: {
       inventoryBehaviour: 'DECREMENT_IGNORING_POLICY'
     }
