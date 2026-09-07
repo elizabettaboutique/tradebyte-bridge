@@ -34,11 +34,11 @@ async function registerWebhooks() {
       e.node.callbackUrl.includes('/webhooks/fulfillment-created')
     );
     if (alreadyRegistered) {
-      addLog({ module: 'webhooks', status: 'info', message: 'Webhook already registered, skipping' });
+      addLog('webhooks', 'info', 'Webhook already registered, skipping');
       return;
     }
   } catch (err) {
-    addLog({ module: 'webhooks', status: 'error', message: `Webhook check failed: ${err.message}` });
+    addLog('webhooks', 'error', `Webhook check failed: ${err.message}`);
     return;
   }
 
@@ -62,9 +62,9 @@ async function registerWebhooks() {
       ` })
     });
     const json = await res.json();
-    addLog({ module: 'webhooks', status: 'info', message: 'Webhook registration result', meta: JSON.stringify(json) });
+    addLog('webhooks', 'info', 'Webhook registration result', { result: JSON.stringify(json) });
   } catch (err) {
-    addLog({ module: 'webhooks', status: 'error', message: `Webhook registration failed: ${err.message}` });
+    addLog('webhooks', 'error', `Webhook registration failed: ${err.message}`);
   }
 }
 
@@ -93,7 +93,7 @@ app.post('/webhooks/fulfillment-created', async (req, res) => {
 
 
   if (!crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac))) {
-    addLog({ module: 'tracking_export', status: 'error', message: 'Invalid webhook HMAC - unauthorized request' });
+    addLog('tracking_export', 'error', 'Invalid webhook HMAC - unauthorized request');
     return res.status(401).send('Unauthorized');
   }
 
