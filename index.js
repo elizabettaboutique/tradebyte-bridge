@@ -9,44 +9,58 @@ const crypto = require('crypto');
 const app = express();
 app.use(express.raw({ type: 'application/json' }));
 
-const INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '2');
-
-
-//  -----  Access Token ----
 const { getValidToken, generateNewToken } = require('./modules/tokenManager');
+
+async function registerWebhooks() {
+  const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
+  const mutation = `
+    mutation {
+      webhookSubscriptionCreate(
+        topic: FULFILLMENTS_UPDATE,
+        webhookSubscription: {
+          format: JSON,
+          callbackUrl: "${process.env.RAILWAY_PUBLIC_URL}/webhooks/fulfillment-created"
+        }
+      ) {
+        userErrors { field message }
+        webhookSubscription { id }
+      }
+    }
+  `;
+  try {
+    const res = await fetch(SHOPIFY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
+      },
+      body: JSON.stringify({ query: mutation })
+    });
+    const json = await res.json();
+    addLog({ module: 'webhooks', status: 'info', message: 'Webhook registration result', meta: JSON.stringify(json) });
+  } catch (err) {
+    addLog({ module: 'webhooks', status: 'error', message: `Webhook registration failed: ${err.message}` });
+  }
+}
 
 // Generate token on startup
 generateNewToken().then(() => {
   console.log('Initial token generated');
 }).catch(console.error);
 
-// Refresh token every 22 hours (2 hours before 24hr expiry)
+// Refresh token every 22 hours
 cron.schedule('0 */22 * * *', async () => {
   await generateNewToken();
 });
 
-// Ensure valid token before each sync
+// Sync inventory and import orders every minute
 cron.schedule('* * * * *', async () => {
   await getValidToken();
-  await syncInventory();
-});
-
-cron.schedule('* * * * *', async () => {
-  await getValidToken();
-  await importOrders();
-});
-
-
-
-
-
-// --- Cron Jobs ---
-cron.schedule(`*/${INTERVAL} * * * *`, async () => {
   await syncInventory();
   await importOrders();
 });
 
-// --- Webhook: Fulfillment Created ---
+// --- Webhook: Fulfillment Created/Updated ---
 app.post('/webhooks/fulfillment-created', async (req, res) => {
   const hmac = req.headers['x-shopify-hmac-sha256'];
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
@@ -98,5 +112,5 @@ app.get('/health', (req, res) => {
 
 app.listen(process.env.PORT || 3000, async () => {
   console.log('Tradebyte bridge running');
-  
+  await registerWebhooks();
 });
