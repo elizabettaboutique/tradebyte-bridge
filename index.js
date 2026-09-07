@@ -93,15 +93,21 @@ cron.schedule('* * * * *', async () => {
 app.post('/webhooks/fulfillment-created', async (req, res) => {
   const hmac = req.headers['x-shopify-hmac-sha256'];
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
-  const digest = crypto.createHmac('sha256', secret).update(req.body).digest('base64');
-  if (digest !== hmac) {
+  
+  // Ensure body is treated as raw buffer
+  const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+  const digest = crypto.createHmac('sha256', secret).update(body).digest('base64');
+  
+  if (!crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac))) {
     addLog({ module: 'tracking_export', status: 'error', message: 'Invalid webhook HMAC - unauthorized request' });
     return res.status(401).send('Unauthorized');
   }
-  const payload = JSON.parse(req.body);
+  
+  const payload = JSON.parse(body);
   res.status(200).send('OK');
   await handleFulfillmentWebhook(payload);
 });
+
 
 // --- Manual Triggers ---
 app.post('/sync/inventory', async (req, res) => {
