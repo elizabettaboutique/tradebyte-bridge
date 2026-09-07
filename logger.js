@@ -7,6 +7,9 @@ const METAOBJECT_TYPE = 'tradebyte_log';
 const MAX_STORED_LOGS = 500;
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+// ---------------------------------------------------------------------------
+// In-memory log store (unchanged behaviour)
+// ---------------------------------------------------------------------------
 const logs = [];
 
 function getLogs() {
@@ -15,97 +18,185 @@ function getLogs() {
 
 function addLog(module, status, message, metadata = {}) {
   const entry = {
-    module,
-    status,
-    message,
-    metadata,
+    module: module,
+    status: status,
+    message: message,
+    metadata: metadata,
     timestamp: new Date().toISOString(),
   };
+
   logs.push(entry);
-  persistLog(entry).catch((err) => {
-    console.error('[logger] persistLog failed:', err.message); // temp debug
-  });
+
+  // Fire and forget: persistence must never block or crash the caller.
+  persistLog(entry).catch(function () {});
+
   return entry;
 }
 
+// ---------------------------------------------------------------------------
+// Shopify Admin API helper
+// ---------------------------------------------------------------------------
+const CREATE_LOG_MUTATION = `mutation CreateTradebyteLog($metaobject: MetaobjectCreateInput!) {
+  metaobjectCreate(metaobject: $metaobject) {
+    metaobject {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}`;
+
+const LIST_LOGS_QUERY = `query ListTradebyteLogs($type: String!, $first: Int!, $after: String) {
+  metaobjects(type: $type, first: $first, after: $after, sortKey: "updated_at", reverse: false) {
+    nodes {
+      id
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}`;
+
+const DELETE_LOG_MUTATION = `mutation DeleteTradebyteLog($id: ID!) {
+  metaobjectDelete(id: $id) {
+    deletedId
+    userErrors {
+      field
+      message
+    }
+  }
+}`;
 
 async function shopifyGraphQL(query, variables) {
-  if (!SHOP_DOMAIN || !ADMIN_API_TOKEN) return null;
-  const res = await fetch(
-    `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shopify-Access-Token': ADMIN_API_TOKEN,
-      },
-      body: JSON.stringify({ query, variables }),
-    }
-  );
-  if (!res.ok) throw new Error('Shopify API HTTP ' + res.status);
-  const payload = await res.json();
-  if (payload.errors?.length) throw new Error(payload.errors.map(e => e.message).join(', '));
+  if (!SHOP_DOMAIN || !ADMIN_API_TOKEN) {
+    throw new Error('SHOPIFY_SHOP_DOMAIN and SHOPIFY_ADMIN_API_TOKEN must be set');
+  }
+
+  const endpoint = 'https://' + SHOP_DOMAIN + '/admin/api/' + API_VERSION + '/graphql.json';
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': ADMIN_API_TOKEN,
+    },
+    body: JSON.stringify({ query: query, variables: variables }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Shopify Admin API returned HTTP ' + response.status);
+  }
+
+  const payload = await response.json();
+
+  if (payload.errors && payload.errors.length > 0) {
+    throw new Error(
+      payload.errors
+        .map(function (item) {
+          return item.message;
+        })
+        .join(', '),
+    );
+  }
+
   return payload.data;
 }
 
-async function persistLog(entry) {
-  await shopifyGraphQL(
-    `mutation ($m: MetaobjectCreateInput!) {
-      metaobjectCreate(metaobject: $m) {
-        metaobject { id }
-        userErrors { field message }
-      }
-    }`,
-    {
-      m: {
-        type: METAOBJECT_TYPE,
-        fields: [
-          { key: 'module',    value: String(entry.module  || '') },
-          { key: 'status',    value: String(entry.status  || '') },
-          { key: 'message',   value: String(entry.message || '') },
-          { key: 'timestamp', value: entry.timestamp },
-          { key: 'metadata',  value: JSON.stringify(entry.metadata || {}) },
-        ],
-      },
-    }
-  );
+function userErrorText(userErrors) {
+  return userErrors
+    .map(function (item) {
+      const field = item.field && item.field.length > 0 ? item.field.join('.') + ': ' : '';
+      return field + item.message;
+    })
+    .join(', ');
 }
 
+// ---------------------------------------------------------------------------
+// Persist a single log entry to a tradebyte_log metaobject
+// ---------------------------------------------------------------------------
+async function persistLog(entry) {
+  const data = await shopifyGraphQL(CREATE_LOG_MUTATION, {
+    metaobject: {
+      type: METAOBJECT_TYPE,
+      fields: [
+        { key: 'module', value: String(entry.module || '') },
+        { key: 'status', value: String(entry.status || '') },
+        { key: 'message', value: String(entry.message || '') },
+        { key: 'timestamp', value: entry.timestamp || new Date().toISOString() },
+        { key: 'metadata', value: JSON.stringify(entry.metadata || {}) },
+      ],
+    },
+  });
+
+  const userErrors = data && data.metaobjectCreate ? data.metaobjectCreate.userErrors || [] : [];
+
+  if (userErrors.length > 0) {
+    throw new Error(userErrorText(userErrors));
+  }
+
+  return data.metaobjectCreate.metaobject.id;
+}
+
+// ---------------------------------------------------------------------------
+// Keep only the newest MAX_STORED_LOGS metaobjects of type tradebyte_log
+// ---------------------------------------------------------------------------
 async function pruneOldLogs() {
   const ids = [];
   let cursor = null;
   let hasNextPage = true;
+
   while (hasNextPage) {
-    const data = await shopifyGraphQL(
-      `query ($first: Int!, $after: String) {
-        metaobjects(type: "${METAOBJECT_TYPE}", first: $first, after: $after, sortKey: "updated_at", reverse: false) {
-          nodes { id }
-          pageInfo { hasNextPage endCursor }
-        }
-      }`,
-      { first: 250, after: cursor }
-    );
-    const conn = data?.metaobjects;
-    if (!conn) break;
-    for (const node of conn.nodes || []) ids.push(node.id);
-    hasNextPage = Boolean(conn.pageInfo?.hasNextPage);
-    cursor = conn.pageInfo?.endCursor ?? null;
+    const data = await shopifyGraphQL(LIST_LOGS_QUERY, {
+      type: METAOBJECT_TYPE,
+      first: 250,
+      after: cursor,
+    });
+
+    const connection = data ? data.metaobjects : null;
+    if (!connection) break;
+
+    const nodes = connection.nodes || [];
+    for (let i = 0; i < nodes.length; i += 1) {
+      if (nodes[i] && nodes[i].id) ids.push(nodes[i].id);
+    }
+
+    hasNextPage = Boolean(connection.pageInfo && connection.pageInfo.hasNextPage);
+    cursor = connection.pageInfo ? connection.pageInfo.endCursor : null;
   }
+
   if (ids.length <= MAX_STORED_LOGS) return 0;
-  const stale = ids.slice(0, ids.length - MAX_STORED_LOGS);
+
+  // ids are ordered oldest first, so the head of the list is what we drop.
+  const staleIds = ids.slice(0, ids.length - MAX_STORED_LOGS);
   let deleted = 0;
-  for (const id of stale) {
-    await shopifyGraphQL(
-      `mutation ($id: ID!) { metaobjectDelete(id: $id) { deletedId userErrors { message } } }`,
-      { id }
-    );
-    deleted++;
+
+  for (let i = 0; i < staleIds.length; i += 1) {
+    const data = await shopifyGraphQL(DELETE_LOG_MUTATION, { id: staleIds[i] });
+    const userErrors = data && data.metaobjectDelete ? data.metaobjectDelete.userErrors || [] : [];
+    if (userErrors.length === 0) deleted += 1;
   }
+
   return deleted;
 }
 
-pruneOldLogs().catch(() => {});
-const t = setInterval(() => pruneOldLogs().catch(() => {}), PRUNE_INTERVAL_MS);
-if (typeof t.unref === 'function') t.unref();
+// Run cleanup once on startup, then once a day. Failures are swallowed so a
+// logging problem can never take the sync process down.
+pruneOldLogs().catch(function () {});
 
-module.exports = { logs, getLogs, addLog, pruneOldLogs };
+const pruneTimer = setInterval(function () {
+  pruneOldLogs().catch(function () {});
+}, PRUNE_INTERVAL_MS);
+
+if (typeof pruneTimer.unref === 'function') {
+  pruneTimer.unref();
+}
+
+module.exports = {
+  logs: logs,
+  getLogs: getLogs,
+  addLog: addLog,
+  pruneOldLogs: pruneOldLogs,
+};
