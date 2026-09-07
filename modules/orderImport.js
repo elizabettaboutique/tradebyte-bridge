@@ -27,6 +27,8 @@ async function shopifyRequest(query, variables) {
   return json;
 }
 
+
+
 async function getVariantBySkuOrEan(sku, ean) {
   try {
     addLog({ module: 'order_import', status: 'info', message: `Querying Shopify for SKU: ${sku}` });
