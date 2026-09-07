@@ -57,29 +57,16 @@ async function getVariantBySkuOrEan(sku, ean) {
   }
 }
 
-
-
 async function createShopifyOrder(order) {
   const orderData = order.ORDER_DATA;
   const shipTo = order.SHIP_TO;
   const sellTo = order.SELL_TO;
   const items = Array.isArray(order.ITEMS.ITEM) ? order.ITEMS.ITEM : [order.ITEMS.ITEM];
 
-  // ← PASTE HERE
   const channelDataArr = Array.isArray(order.ORDER_CHANNEL_DATA?.CHANNEL_DATA)
     ? order.ORDER_CHANNEL_DATA.CHANNEL_DATA
     : [order.ORDER_CHANNEL_DATA?.CHANNEL_DATA];
   const merchantCurrency = channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text'] || 'EUR';
-
-  // then continues with lineItems resolution...
-  const lineItems = [];
-
-
-async function createShopifyOrder(order) {
-  const orderData = order.ORDER_DATA;
-  const shipTo = order.SHIP_TO;
-  const sellTo = order.SELL_TO;
-  const items = Array.isArray(order.ITEMS.ITEM) ? order.ITEMS.ITEM : [order.ITEMS.ITEM];
 
   const lineItems = [];
   for (const item of items) {
@@ -120,41 +107,40 @@ async function createShopifyOrder(order) {
     }
   `;
 
-const variables = {
-  order: {
-    lineItems,
-    currency: merchantCurrency,
-    shippingAddress: {
-      firstName: shipTo.FIRSTNAME,
-      lastName: shipTo.LASTNAME,
-      address1: shipTo.STREET_NO,
-      zip: String(shipTo.ZIP),
-      city: shipTo.CITY,
-      countryCode: shipTo.COUNTRY
+  const variables = {
+    order: {
+      lineItems,
+      currency: merchantCurrency,
+      shippingAddress: {
+        firstName: shipTo.FIRSTNAME,
+        lastName: shipTo.LASTNAME,
+        address1: shipTo.STREET_NO,
+        zip: String(shipTo.ZIP),
+        city: shipTo.CITY,
+        countryCode: shipTo.COUNTRY
+      },
+      billingAddress: {
+        firstName: sellTo.FIRSTNAME,
+        lastName: sellTo.LASTNAME,
+        address1: sellTo.STREET_NO,
+        zip: String(sellTo.ZIP),
+        city: sellTo.CITY,
+        countryCode: sellTo.COUNTRY
+      },
+      email: sellTo.EMAIL,
+      note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO}`,
+      tags: ['tradebyte', 'farfetch', orderData.CHANNEL_SIGN],
+      shippingLines: [
+        {
+          title: 'Farfetch Shipping',
+          price: String(order.SHIPMENT?.PRICE || '0')
+        }
+      ]
     },
-    billingAddress: {
-      firstName: sellTo.FIRSTNAME,
-      lastName: sellTo.LASTNAME,
-      address1: sellTo.STREET_NO,
-      zip: String(sellTo.ZIP),
-      city: sellTo.CITY,
-      countryCode: sellTo.COUNTRY
-    },
-    email: sellTo.EMAIL,
-    note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO}`,
-    tags: ['tradebyte', 'farfetch', orderData.CHANNEL_SIGN],
-    shippingLines: [
-      {
-        title: 'Farfetch Shipping',
-        price: String(order.SHIPMENT?.PRICE || '0')
-      }
-    ]
-  },
-  options: {
-    inventoryBehaviour: 'DECREMENT_IGNORING_POLICY'
-  }
-};
-
+    options: {
+      inventoryBehaviour: 'DECREMENT_IGNORING_POLICY'
+    }
+  };
 
   try {
     const result = await shopifyRequest(mutation, variables);
