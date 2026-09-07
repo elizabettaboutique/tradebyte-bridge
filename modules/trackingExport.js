@@ -34,20 +34,21 @@ function buildShipXml(payload) {
   const carrier = mapCarrier(payload.tracking_company);
   const messageId = `SHIP-${payload.order_id}-${Date.now()}`;
 
-  const message = {
-    TB_ORDER_ID: tbOrderId,
-    MESSAGE_ID: messageId,
-    MESSAGE_TYPE: 'SHIP',
-    ITEMS: {
-      ITEM: {
-        TB_ORDER_ITEM_ID: tbOrderItemId,
-        QUANTITY: payload.quantity || 1,
-        IDCODE: trackingNumber,
-        CARRIER_PARCEL_TYPE: carrier,
-        ...(payload.tracking_url ? { TRACKING_URL: payload.tracking_url } : {})
-      }
-    }
-  };
+const item = {
+  TB_ORDER_ITEM_ID: tbOrderItemId,
+  QUANTITY: payload.quantity || 1,
+  IDCODE: trackingNumber,
+  CARRIER_PARCEL_TYPE: carrier
+};
+if (payload.tracking_url) item.TRACKING_URL = payload.tracking_url;
+
+const message = {
+  TB_ORDER_ID: tbOrderId,
+  MESSAGE_ID: messageId,
+  MESSAGE_TYPE: 'SHIP',
+  ITEMS: { ITEM: item }
+};
+
 
   return builder.build({ MESSAGE: message });
 }
