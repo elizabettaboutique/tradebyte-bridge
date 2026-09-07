@@ -46,6 +46,7 @@ async function registerWebhooks() {
 // Generate token on startup
 generateNewToken().then(() => {
   console.log('Initial token generated');
+  await registerWebhooks();
 }).catch(console.error);
 
 // Refresh token every 22 hours
@@ -112,5 +113,5 @@ app.get('/health', (req, res) => {
 
 app.listen(process.env.PORT || 3000, async () => {
   console.log('Tradebyte bridge running');
-  await registerWebhooks();
+  
 });
