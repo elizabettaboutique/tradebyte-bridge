@@ -27,8 +27,6 @@ async function shopifyRequest(query, variables) {
   return json;
 }
 
-
-
 async function getVariantBySkuOrEan(sku, ean) {
   try {
     addLog({ module: 'order_import', status: 'info', message: `Querying Shopify for SKU: ${sku}` });
@@ -81,21 +79,22 @@ async function createShopifyOrder(order) {
       });
       continue;
     }
+
     const itemPrice = typeof item.ITEM_PRICE === 'object'
-  ? item.ITEM_PRICE['#text']
-  : item.ITEM_PRICE;
+      ? item.ITEM_PRICE['#text']
+      : item.ITEM_PRICE;
 
-lineItems.push({
-  variantId: variant.id,
-  quantity: parseInt(item.QUANTITY),
-  priceSet: {
-    shopMoney: {
-      amount: String(itemPrice || '0.00'),
-      currencyCode: merchantCurrency
-    }
+    lineItems.push({
+      variantId: variant.id,
+      quantity: parseInt(item.QUANTITY),
+      priceSet: {
+        shopMoney: {
+          amount: String(itemPrice || '0.00'),
+          currencyCode: merchantCurrency
+        }
+      }
+    });
   }
-});
-
 
   if (lineItems.length === 0) {
     addLog({
