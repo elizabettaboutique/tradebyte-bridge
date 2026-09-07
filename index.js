@@ -13,28 +13,55 @@ const { getValidToken, generateNewToken } = require('./modules/tokenManager');
 
 async function registerWebhooks() {
   const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
-  const mutation = `
-    mutation {
-      webhookSubscriptionCreate(
-        topic: FULFILLMENTS_UPDATE,
-        webhookSubscription: {
-          format: JSON,
-          callbackUrl: "${process.env.RAILWAY_PUBLIC_URL}/webhooks/fulfillment-created"
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
+  };
+
+  // Check if already registered
+  try {
+    const checkRes = await fetch(SHOPIFY_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query: `{
+        webhookSubscriptions(first: 10, topics: FULFILLMENTS_UPDATE) {
+          edges { node { id callbackUrl } }
         }
-      ) {
-        userErrors { field message }
-        webhookSubscription { id }
-      }
+      }` })
+    });
+    const checkJson = await checkRes.json();
+    const existing = checkJson.data?.webhookSubscriptions?.edges || [];
+    const alreadyRegistered = existing.some(e =>
+      e.node.callbackUrl.includes('/webhooks/fulfillment-created')
+    );
+    if (alreadyRegistered) {
+      addLog({ module: 'webhooks', status: 'info', message: 'Webhook already registered, skipping' });
+      return;
     }
-  `;
+  } catch (err) {
+    addLog({ module: 'webhooks', status: 'error', message: `Webhook check failed: ${err.message}` });
+    return;
+  }
+
+  // Register webhook
   try {
     const res = await fetch(SHOPIFY_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
-      },
-      body: JSON.stringify({ query: mutation })
+      headers,
+      body: JSON.stringify({ query: `
+        mutation {
+          webhookSubscriptionCreate(
+            topic: FULFILLMENTS_UPDATE,
+            webhookSubscription: {
+              format: JSON,
+              callbackUrl: "${process.env.RAILWAY_PUBLIC_URL}/webhooks/fulfillment-created"
+            }
+          ) {
+            userErrors { field message }
+            webhookSubscription { id }
+          }
+        }
+      ` })
     });
     const json = await res.json();
     addLog({ module: 'webhooks', status: 'info', message: 'Webhook registration result', meta: JSON.stringify(json) });
@@ -42,6 +69,7 @@ async function registerWebhooks() {
     addLog({ module: 'webhooks', status: 'error', message: `Webhook registration failed: ${err.message}` });
   }
 }
+
 
 // Generate token on startup
 generateNewToken().then(async () => {
