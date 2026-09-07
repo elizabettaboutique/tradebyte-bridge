@@ -201,9 +201,6 @@ async function importOrders() {
       const orderList = parsed.ORDER_LIST;
       const orders = Array.isArray(orderList.ORDER) ? orderList.ORDER : [orderList.ORDER];
 
-      for (const order of orders) {
-  const channelNo = order.ORDER_DATA?.CHANNEL_NO;
-  addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
 
 
 for (const order of orders) {
