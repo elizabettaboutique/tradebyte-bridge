@@ -90,19 +90,7 @@ app.post('/webhooks/fulfillment-created', async (req, res) => {
   const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
   const digest = crypto.createHmac('sha256', secret).update(body).digest('base64');
 
-  addLog({
-    module: 'tracking_export',
-    status: 'info',
-    message: 'HMAC debug',
-    meta: JSON.stringify({
-      secretLength: secret?.length,
-      secretFirst4: secret?.substring(0, 4),
-      secretLast4: secret?.slice(-4),
-      digestComputed: digest,
-      hmacReceived: hmac,
-      match: digest === hmac
-    })
-  });
+
 
   if (!crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac))) {
     addLog({ module: 'tracking_export', status: 'error', message: 'Invalid webhook HMAC - unauthorized request' });
