@@ -44,7 +44,7 @@ async function registerWebhooks() {
 }
 
 // Generate token on startup
-generateNewToken().then(() => {
+generateNewToken().then(async () => {
   console.log('Initial token generated');
   await registerWebhooks();
 }).catch(console.error);
