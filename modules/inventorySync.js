@@ -72,13 +72,6 @@ function buildXml(items) {
 
 
 async function syncInventory() {
-  console.log('syncInventory fired at', new Date().toISOString()); // temp debug
-  addLog('inventory_sync', 'info', 'Starting inventory sync');
-  ...
-}
-
-
-async function syncInventory() {
   addLog('inventory_sync', 'info', 'Starting inventory sync');
   const sftp = new SftpClient();
   try {
