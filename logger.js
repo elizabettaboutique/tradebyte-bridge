@@ -22,9 +22,12 @@ function addLog(module, status, message, metadata = {}) {
     timestamp: new Date().toISOString(),
   };
   logs.push(entry);
-  persistLog(entry).catch(() => {});
+  persistLog(entry).catch((err) => {
+    console.error('[logger] persistLog failed:', err.message); // temp debug
+  });
   return entry;
 }
+
 
 async function shopifyGraphQL(query, variables) {
   if (!SHOP_DOMAIN || !ADMIN_API_TOKEN) return null;
