@@ -17,11 +17,8 @@ async function shopifyRequest(query, variables) {
   });
   const json = await res.json();
   if (!res.ok || json.errors) {
-    addLog({
-      module: 'order_import',
-      status: 'error',
-      message: 'Shopify GraphQL/API error',
-      meta: JSON.stringify(json.errors || { httpStatus: res.status, body: json })
+    addLog('order_import', 'error', 'Shopify GraphQL/API error', {
+      errors: json.errors || { httpStatus: res.status, body: json }
     });
   }
   return json;
@@ -29,15 +26,13 @@ async function shopifyRequest(query, variables) {
 
 async function getVariantBySkuOrEan(sku, ean) {
   try {
-    addLog({ module: 'order_import', status: 'info', message: `Querying Shopify for SKU: ${sku}` });
+    addLog('order_import', 'info', `Querying Shopify for SKU: ${sku}`);
 
     const result = await shopifyRequest(`{
       productVariants(first: 1, query: "sku:'${sku}'") {
         edges { node { id title price } }
       }
     }`);
-
-    addLog({ module: 'order_import', status: 'info', message: 'SKU query result', meta: JSON.stringify(result) });
 
     const variant = result.data?.productVariants?.edges?.[0]?.node;
     if (variant) return variant;
@@ -48,11 +43,9 @@ async function getVariantBySkuOrEan(sku, ean) {
       }
     }`);
 
-    addLog({ module: 'order_import', status: 'info', message: 'EAN query result', meta: JSON.stringify(result2) });
-
     return result2.data?.productVariants?.edges?.[0]?.node || null;
   } catch (err) {
-    addLog({ module: 'order_import', status: 'error', message: `getVariantBySkuOrEan error: ${err.message}` });
+    addLog('order_import', 'error', `getVariantBySkuOrEan error: ${err.message}`);
     return null;
   }
 }
@@ -72,11 +65,7 @@ async function createShopifyOrder(order) {
   for (const item of items) {
     const variant = await getVariantBySkuOrEan(item.SKU, item.EAN);
     if (!variant) {
-      addLog({
-        module: 'order_import',
-        status: 'error',
-        message: `Variant not found for SKU: ${item.SKU} / EAN: ${item.EAN}`
-      });
+      addLog('order_import', 'error', `Variant not found for SKU: ${item.SKU} / EAN: ${item.EAN}`);
       continue;
     }
 
@@ -97,11 +86,7 @@ async function createShopifyOrder(order) {
   }
 
   if (lineItems.length === 0) {
-    addLog({
-      module: 'order_import',
-      status: 'error',
-      message: `No valid line items found for order ${orderData.CHANNEL_NO} — skipping`
-    });
+    addLog('order_import', 'error', `No valid line items for order ${orderData.CHANNEL_NO} — skipping`);
     return null;
   }
 
@@ -181,31 +166,22 @@ async function createShopifyOrder(order) {
   try {
     const result = await shopifyRequest(mutation, variables);
 
-    addLog({
-      module: 'order_import',
-      status: 'info',
-      message: 'Mutation result',
-      meta: JSON.stringify(result)
-    });
-
     if (result.data?.orderCreate?.userErrors?.length > 0) {
-      addLog({
-        module: 'order_import',
-        status: 'error',
-        message: `Shopify userErrors: ${JSON.stringify(result.data.orderCreate.userErrors)}`
+      addLog('order_import', 'error', 'Shopify userErrors', {
+        errors: result.data.orderCreate.userErrors
       });
       return null;
     }
 
     return result.data?.orderCreate?.order || null;
   } catch (err) {
-    addLog({ module: 'order_import', status: 'error', message: `Mutation exception: ${err.message}` });
+    addLog('order_import', 'error', `Mutation exception: ${err.message}`);
     return null;
   }
 }
 
 async function importOrders() {
-  addLog({ module: 'order_import', status: 'info', message: 'Starting order import' });
+  addLog('order_import', 'info', 'Starting order import');
   const sftp = new SftpClient();
   try {
     await sftp.connect({
@@ -217,11 +193,7 @@ async function importOrders() {
     const files = await sftp.list(SFTP_OUT);
     const orderFiles = files.filter(f => f.name.startsWith('ORDERS_') && f.name.endsWith('.xml'));
 
-    addLog({
-      module: 'order_import',
-      status: 'info',
-      message: `Files in /out/: ${orderFiles.map(f => f.name).join(', ') || 'EMPTY'}`
-    });
+    addLog('order_import', 'info', `Files in /out/: ${orderFiles.map(f => f.name).join(', ') || 'EMPTY'}`);
 
     for (const file of orderFiles) {
       const remotePath = `${SFTP_OUT}${file.name}`;
@@ -231,11 +203,8 @@ async function importOrders() {
       }));
       const xmlContent = Buffer.concat(chunks).toString('utf8');
 
-      addLog({
-        module: 'order_import',
-        status: 'info',
-        message: `Parsing file: ${file.name}`,
-        meta: { preview: xmlContent.substring(0, 300) }
+      addLog('order_import', 'info', `Parsing file: ${file.name}`, {
+        preview: xmlContent.substring(0, 300)
       });
 
       const parser = new XMLParser({ ignoreAttributes: false, parseTagValue: true });
@@ -247,24 +216,19 @@ async function importOrders() {
 
       for (const order of orders) {
         const channelNo = order.ORDER_DATA?.CHANNEL_NO;
-        addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
+        addLog('order_import', 'info', `Processing order ${channelNo}`);
 
         const debugItems = Array.isArray(order.ITEMS?.ITEM) ? order.ITEMS.ITEM : [order.ITEMS?.ITEM];
         for (const item of debugItems) {
-          addLog({
-            module: 'order_import',
-            status: 'info',
-            message: `Looking up SKU: "${item?.SKU}" EAN: "${item?.EAN}"`
-          });
+          addLog('order_import', 'info', `Looking up SKU: "${item?.SKU}" EAN: "${item?.EAN}"`);
         }
 
         const shopifyOrder = await createShopifyOrder(order);
         if (shopifyOrder) {
-          addLog({
-            module: 'order_import',
-            status: 'success',
-            message: `Order created: ${shopifyOrder.name}`,
-            meta: { id: shopifyOrder.id, total: shopifyOrder.totalPriceSet?.shopMoney?.amount }
+          addLog('order_import', 'success', `Order created: ${shopifyOrder.name}`, {
+            shopify_order_id: shopifyOrder.id,
+            order_name: shopifyOrder.name,
+            total_price: shopifyOrder.totalPriceSet?.shopMoney?.amount
           });
         } else {
           anyFailed = true;
@@ -273,14 +237,14 @@ async function importOrders() {
 
       if (!anyFailed) {
         await sftp.rename(remotePath, `${SFTP_ARCHIV}${file.name}`);
-        addLog({ module: 'order_import', status: 'info', message: `Archived: ${file.name}` });
+        addLog('order_import', 'info', `Archived: ${file.name}`);
       } else {
         await sftp.rename(remotePath, `${SFTP_ARCHIV}FAILED_${file.name}`);
-        addLog({ module: 'order_import', status: 'error', message: `Orders failed — moved to FAILED_${file.name}` });
+        addLog('order_import', 'error', `Orders failed — moved to FAILED_${file.name}`);
       }
     }
   } catch (err) {
-    addLog({ module: 'order_import', status: 'error', message: `Import error: ${err.message}`, meta: { stack: err.stack } });
+    addLog('order_import', 'error', `Import error: ${err.message}`, { stack: err.stack });
   } finally {
     await sftp.end().catch(() => {});
   }
