@@ -6,11 +6,7 @@ const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-0
 const LOCATION_ID = 'gid://shopify/Location/12786437';
 const BUFFER = parseInt(process.env.INVENTORY_BUFFER || '2');
 
-function getTbFilename(prefix) {
-  const now = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-  const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+function getTbFilename() {
   const uid = Math.floor(Date.now() / 1000);
   return `TBCAT_stock_${uid}.xml`;
 }
@@ -75,13 +71,13 @@ function buildXml(items) {
 }
 
 async function syncInventory() {
-  addLog({ module: 'inventory_sync', status: 'info', message: 'Starting inventory sync' });
+  addLog('inventory_sync', 'info', 'Starting inventory sync');
   const sftp = new SftpClient();
   try {
     const items = await fetchInventory();
     const xml = buildXml(items);
     const skuCount = items.filter(i => i.sku).length;
-    const filename = getTbFilename('TBSTOCK');
+    const filename = getTbFilename();
 
     await sftp.connect({
       host: process.env.TB_SFTP_HOST,
@@ -92,14 +88,9 @@ async function syncInventory() {
     const dir = process.env.TB_SFTP_IN_INVENTORY || '/in/';
     await sftp.put(Buffer.from(xml), `${dir}${filename}`);
 
-    addLog({
-      module: 'inventory_sync',
-      status: 'success',
-      message: `Uploaded ${filename}`,
-      meta: { sku_count: skuCount, filename }
-    });
+    addLog('inventory_sync', 'success', `Uploaded ${filename}`, { sku_count: skuCount, filename });
   } catch (err) {
-    addLog({ module: 'inventory_sync', status: 'error', message: err.message });
+    addLog('inventory_sync', 'error', err.message);
   } finally {
     await sftp.end().catch(() => {});
   }
