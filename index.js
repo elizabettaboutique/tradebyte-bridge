@@ -18,7 +18,6 @@ async function registerWebhooks() {
     'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
   };
 
-  // Check if already registered
   try {
     const checkRes = await fetch(SHOPIFY_URL, {
       method: 'POST',
@@ -43,7 +42,6 @@ async function registerWebhooks() {
     return;
   }
 
-  // Register webhook
   try {
     const res = await fetch(SHOPIFY_URL, {
       method: 'POST',
@@ -70,19 +68,15 @@ async function registerWebhooks() {
   }
 }
 
-
-// Generate token on startup
 generateNewToken().then(async () => {
   console.log('Initial token generated');
   await registerWebhooks();
 }).catch(console.error);
 
-// Refresh token every 22 hours
 cron.schedule('0 */22 * * *', async () => {
   await generateNewToken();
 });
 
-// Sync inventory and import orders every minute
 cron.schedule('* * * * *', async () => {
   await getValidToken();
   await syncInventory();
@@ -109,10 +103,16 @@ app.post('/webhooks/fulfillment-created', async (req, res) => {
       match: digest === hmac
     })
   });
-  // ... rest of handler
 
+  if (!crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac))) {
+    addLog({ module: 'tracking_export', status: 'error', message: 'Invalid webhook HMAC - unauthorized request' });
+    return res.status(401).send('Unauthorized');
+  }
 
-
+  const payload = JSON.parse(body);
+  res.status(200).send('OK');
+  await handleFulfillmentWebhook(payload);
+});
 
 // --- Manual Triggers ---
 app.post('/sync/inventory', async (req, res) => {
@@ -150,7 +150,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.listen(process.env.PORT || 3000, async () => {
+app.listen(process.env.PORT || 3000, () => {
   console.log('Tradebyte bridge running');
-  
 });
