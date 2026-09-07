@@ -205,6 +205,28 @@ async function importOrders() {
   const channelNo = order.ORDER_DATA?.CHANNEL_NO;
   addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
 
+
+for (const order of orders) {
+  const channelNo = order.ORDER_DATA?.CHANNEL_NO;
+  
+  // ← EXISTING LINE (207)
+  addLog({ module: 'order_import', status: 'info', message: `Processing order ${channelNo}` });
+
+  // ← ADD THESE LINES RIGHT HERE (after line 207, before line 209)
+  const debugItems = Array.isArray(order.ITEMS?.ITEM) ? order.ITEMS.ITEM : [order.ITEMS?.ITEM];
+  for (const item of debugItems) {
+    addLog({
+      module: 'order_import',
+      status: 'info',
+      message: `Looking up SKU: "${item?.SKU}" EAN: "${item?.EAN}"`
+    });
+  }
+
+  // ← EXISTING LINE (209)
+  const shopifyOrder = await createShopifyOrder(order);
+
+
+        
   const shopifyOrder = await createShopifyOrder(order);
   if (shopifyOrder) {
     addLog({
