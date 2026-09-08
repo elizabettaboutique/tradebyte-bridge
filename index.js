@@ -77,7 +77,7 @@ cron.schedule('0 */22 * * *', async () => {
   await generateNewToken();
 });
 
-cron.schedule('* * * * *', async () => {
+cron.schedule('*/30 * * * *', async () => {
   await getValidToken();
   await syncInventory();
   await importOrders();
