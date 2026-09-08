@@ -50,6 +50,18 @@ async function getVariantBySkuOrEan(sku, ean) {
   }
 }
 
+const MARK_PAID_MUTATION = `
+  mutation orderMarkAsPaid($input: OrderMarkAsPaidInput!) {
+    orderMarkAsPaid(input: $input) {
+      order {
+        id
+        displayFinancialStatus
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
 async function createShopifyOrder(order) {
   const orderData = order.ORDER_DATA;
   const shipTo = order.SHIP_TO;
@@ -62,7 +74,6 @@ async function createShopifyOrder(order) {
   const merchantCurrency = channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text'] || 'EUR';
 
   const lineItems = [];
-  let orderTotal = 0;
 
   for (const item of items) {
     const variant = await getVariantBySkuOrEan(item.SKU, item.EAN);
@@ -77,7 +88,6 @@ async function createShopifyOrder(order) {
 
     const quantity = parseInt(item.QUANTITY);
     const amount = parseFloat(itemPrice || '0.00');
-    orderTotal += amount * quantity;
 
     lineItems.push({
       variantId: variant.id,
@@ -96,9 +106,7 @@ async function createShopifyOrder(order) {
     return null;
   }
 
-  // Add shipping cost to total
   const shippingPrice = parseFloat(order.SHIPMENT?.PRICE || '0.00');
-  orderTotal += shippingPrice;
 
   const mutation = `
     mutation orderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
@@ -147,15 +155,6 @@ async function createShopifyOrder(order) {
           }
         }
       ],
-      // ✅ Mark as paid on import — Farfetch only sends pre-paid orders, COD not available
-      transactions: [
-        {
-          kind: 'SALE',
-          status: 'SUCCESS',
-          amount: String(orderTotal.toFixed(2)),
-          gateway: orderData.CHANNEL_SIGN || 'Farfetch'
-        }
-      ],
       metafields: [
         {
           namespace: 'tradebyte',
@@ -192,7 +191,23 @@ async function createShopifyOrder(order) {
       return null;
     }
 
-    return result.data?.orderCreate?.order || null;
+    const shopifyOrder = result.data?.orderCreate?.order;
+    if (!shopifyOrder) return null;
+
+    // ✅ Mark order as paid — Farfetch only sends pre-paid orders
+    const paidResult = await shopifyRequest(MARK_PAID_MUTATION, {
+      input: { id: shopifyOrder.id }
+    });
+
+    if (paidResult.data?.orderMarkAsPaid?.userErrors?.length > 0) {
+      addLog('order_import', 'error', `Mark as paid failed for ${shopifyOrder.name}`, {
+        errors: paidResult.data.orderMarkAsPaid.userErrors
+      });
+    } else {
+      addLog('order_import', 'info', `Marked as paid: ${shopifyOrder.name}`);
+    }
+
+    return shopifyOrder;
   } catch (err) {
     addLog('order_import', 'error', `Mutation exception: ${err.message}`);
     return null;
