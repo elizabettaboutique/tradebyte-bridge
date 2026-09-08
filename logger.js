@@ -27,6 +27,9 @@ function addLog(module, status, message, metadata = {}) {
 
   logs.push(entry);
 
+console.log(`[${entry.timestamp}] module: ${module} status: ${status} message: ${message} meta: ${JSON.stringify(metadata)}`);
+
+  
   // Fire and forget: persistence must never block or crash the caller.
   persistLog(entry).catch(function () {});
 
