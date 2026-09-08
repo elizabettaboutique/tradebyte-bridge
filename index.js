@@ -70,7 +70,7 @@ async function registerWebhooks() {
 
 generateNewToken().then(async () => {
   console.log('Initial token generated');
-  await registerWebhooks();
+ // await registerWebhooks();
 }).catch(console.error);
 
 cron.schedule('0 */22 * * *', async () => {
