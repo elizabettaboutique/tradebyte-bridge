@@ -62,6 +62,8 @@ async function createShopifyOrder(order) {
   const merchantCurrency = channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text'] || 'EUR';
 
   const lineItems = [];
+  let orderTotal = 0;
+
   for (const item of items) {
     const variant = await getVariantBySkuOrEan(item.SKU, item.EAN);
     if (!variant) {
@@ -73,12 +75,16 @@ async function createShopifyOrder(order) {
       ? item.ITEM_PRICE['#text']
       : item.ITEM_PRICE;
 
+    const quantity = parseInt(item.QUANTITY);
+    const amount = parseFloat(itemPrice || '0.00');
+    orderTotal += amount * quantity;
+
     lineItems.push({
       variantId: variant.id,
-      quantity: parseInt(item.QUANTITY),
+      quantity,
       priceSet: {
         shopMoney: {
-          amount: String(itemPrice || '0.00'),
+          amount: String(amount.toFixed(2)),
           currencyCode: merchantCurrency
         }
       }
@@ -89,6 +95,10 @@ async function createShopifyOrder(order) {
     addLog('order_import', 'error', `No valid line items for order ${orderData.CHANNEL_NO} — skipping`);
     return null;
   }
+
+  // Add shipping cost to total
+  const shippingPrice = parseFloat(order.SHIPMENT?.PRICE || '0.00');
+  orderTotal += shippingPrice;
 
   const mutation = `
     mutation orderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
@@ -131,10 +141,19 @@ async function createShopifyOrder(order) {
           title: 'Farfetch Shipping',
           priceSet: {
             shopMoney: {
-              amount: String(order.SHIPMENT?.PRICE || '0.00'),
+              amount: String(shippingPrice.toFixed(2)),
               currencyCode: merchantCurrency
             }
           }
+        }
+      ],
+      // ✅ Mark as paid on import — Farfetch only sends pre-paid orders, COD not available
+      transactions: [
+        {
+          kind: 'SALE',
+          status: 'SUCCESS',
+          amount: String(orderTotal.toFixed(2)),
+          gateway: orderData.CHANNEL_SIGN || 'Farfetch'
         }
       ],
       metafields: [
