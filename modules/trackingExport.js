@@ -34,21 +34,20 @@ function buildShipXml(payload) {
   const carrier = mapCarrier(payload.tracking_company);
   const messageId = `SHIP-${payload.order_id}-${Date.now()}`;
 
-const item = {
-  TB_ORDER_ITEM_ID: tbOrderItemId,
-  QUANTITY: payload.quantity || 1,
-  IDCODE: trackingNumber,
-  CARRIER_PARCEL_TYPE: carrier
-};
-if (payload.tracking_url) item.TRACKING_URL = payload.tracking_url;
+  const item = {
+    TB_ORDER_ITEM_ID: tbOrderItemId,
+    QUANTITY: payload.quantity || 1,
+    IDCODE: trackingNumber,
+    CARRIER_PARCEL_TYPE: carrier
+  };
+  if (payload.tracking_url) item.TRACKING_URL = payload.tracking_url;
 
-const message = {
-  TB_ORDER_ID: tbOrderId,
-  MESSAGE_ID: messageId,
-  MESSAGE_TYPE: 'SHIP',
-  ITEMS: { ITEM: item }
-};
-
+  const message = {
+    TB_ORDER_ID: tbOrderId,
+    MESSAGE_ID: messageId,
+    MESSAGE_TYPE: 'SHIP',
+    ITEMS: { ITEM: item }
+  };
 
   return builder.build({ MESSAGE: message });
 }
@@ -83,6 +82,12 @@ async function fetchTbOrderIds(shopifyOrderId) {
 }
 
 async function handleFulfillmentWebhook(payload) {
+  // Check TB metafield first — silently skip non-TB orders
+  const tbIds = await fetchTbOrderIds(payload.order_id);
+  if (!tbIds.tbOrderId) {
+    return; // Not a TB order, skip silently
+  }
+
   addLog('tracking_export', 'info', `Processing tracking for order ${payload.order_id}`);
 
   const sftp = new SftpClient();
@@ -91,12 +96,6 @@ async function handleFulfillmentWebhook(payload) {
 
     if (!trackingNumber) {
       addLog('tracking_export', 'info', 'No tracking number yet, skipping');
-      return;
-    }
-
-    const tbIds = await fetchTbOrderIds(payload.order_id);
-    if (!tbIds.tbOrderId) {
-      addLog('tracking_export', 'error', `No TB_ORDER_ID for Shopify order ${payload.order_id} — was this a Tradebyte order?`);
       return;
     }
 
