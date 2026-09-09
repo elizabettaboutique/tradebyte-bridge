@@ -62,6 +62,27 @@ const MARK_PAID_MUTATION = `
   }
 `;
 
+// Retry up to 3 times with increasing delays to handle Shopify's
+// brief post-creation lock on the order
+async function markOrderAsPaid(orderId, orderName) {
+  const delays = [2000, 4000, 6000];
+  for (const delay of delays) {
+    await new Promise(resolve => setTimeout(resolve, delay));
+    const paidResult = await shopifyRequest(MARK_PAID_MUTATION, {
+      input: { id: orderId }
+    });
+    const userErrors = paidResult.data?.orderMarkAsPaid?.userErrors || [];
+    if (userErrors.length === 0) {
+      addLog('order_import', 'info', `Marked as paid: ${orderName}`);
+      return true;
+    }
+    const msg = userErrors.map(e => e.message).join(', ');
+    addLog('order_import', 'error', `Mark as paid attempt failed for ${orderName}: ${msg}`);
+  }
+  addLog('order_import', 'error', `Mark as paid exhausted all retries for ${orderName}`);
+  return false;
+}
+
 async function createShopifyOrder(order) {
   const orderData = order.ORDER_DATA;
   const shipTo = order.SHIP_TO;
@@ -194,18 +215,8 @@ async function createShopifyOrder(order) {
     const shopifyOrder = result.data?.orderCreate?.order;
     if (!shopifyOrder) return null;
 
-    // ✅ Mark order as paid — Farfetch only sends pre-paid orders
-    const paidResult = await shopifyRequest(MARK_PAID_MUTATION, {
-      input: { id: shopifyOrder.id }
-    });
-
-    if (paidResult.data?.orderMarkAsPaid?.userErrors?.length > 0) {
-      addLog('order_import', 'error', `Mark as paid failed for ${shopifyOrder.name}`, {
-        errors: paidResult.data.orderMarkAsPaid.userErrors
-      });
-    } else {
-      addLog('order_import', 'info', `Marked as paid: ${shopifyOrder.name}`);
-    }
+    // ✅ Mark as paid with retry — Farfetch only sends pre-paid orders
+    await markOrderAsPaid(shopifyOrder.id, shopifyOrder.name);
 
     return shopifyOrder;
   } catch (err) {
