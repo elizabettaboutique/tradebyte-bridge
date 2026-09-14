@@ -92,7 +92,7 @@ async function createShopifyOrder(order) {
   const channelDataArr = Array.isArray(order.ORDER_CHANNEL_DATA?.CHANNEL_DATA)
     ? order.ORDER_CHANNEL_DATA.CHANNEL_DATA
     : [order.ORDER_CHANNEL_DATA?.CHANNEL_DATA];
-  const merchantCurrency = channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text'] || 'EUR';
+  const merchantCurrency = channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text'] || '$';
 
   const lineItems = [];
 
