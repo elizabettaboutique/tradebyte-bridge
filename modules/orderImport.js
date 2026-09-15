@@ -91,22 +91,22 @@ async function createShopifyOrder(order) {
     ? order.ORDER_CHANNEL_DATA.CHANNEL_DATA
     : [order.ORDER_CHANNEL_DATA?.CHANNEL_DATA];
 
-  // Read currency directly from TB.One — no conversion, pass as-is to Shopify
-  const tbCurrency =
-    channelDataArr.find(d => d?.['@_key'] === 'currency')?.['#text'] ||
-    channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text'] ||
-    null;
+// Read currency directly from TB.One — no conversion, pass as-is to Shopify
+const tbCurrency =
+  channelDataArr.find(d => d?.['@_key'] === 'currency')?.['#text'] ||
+  channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text'] ||
+  'USD'; // fallback if TB.One doesn't include currency field
 
-  // Reject order if no currency found — we must not guess
-  if (!tbCurrency) {
-    addLog('order_import', 'error',
-      `Order ${orderData.CHANNEL_NO} rejected — no currency field in TB.One XML. ` +
-      `TB.One must include "currency" or "merchantOrderCurrency" in ORDER_CHANNEL_DATA.`
-    );
-    return null;
-  }
+if (!channelDataArr.find(d => d?.['@_key'] === 'currency')?.['#text'] &&
+    !channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text']) {
+  addLog('order_import', 'error',
+    `No currency field in TB.One XML for order ${orderData.CHANNEL_NO} — falling back to USD. ` +
+    `TB.One should include "currency" or "merchantOrderCurrency" in ORDER_CHANNEL_DATA.`
+  );
+}
 
-  addLog('order_import', 'info', `Order currency: ${tbCurrency}`);
+addLog('order_import', 'info', `Order currency: ${tbCurrency}`);
+
 
   const lineItems = [];
 
