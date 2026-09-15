@@ -24,26 +24,6 @@ async function shopifyRequest(query, variables) {
   return json;
 }
 
-// ---------------------------------------------------------------------------
-// Currency conversion — always converts to USD using frankfurter.app (free,
-// no API key required). Falls back to the original amount on any error.
-// ---------------------------------------------------------------------------
-async function convertToUSD(amount, fromCurrency) {
-  if (fromCurrency === 'USD') return amount;
-  try {
-    const res = await fetch(`https://api.frankfurter.app/latest?from=${fromCurrency}&to=USD`);
-    const json = await res.json();
-    const rate = json.rates?.USD;
-    if (!rate) throw new Error(`No USD rate found for ${fromCurrency}`);
-    const converted = parseFloat((amount * rate).toFixed(2));
-    addLog('order_import', 'info', `Converted ${amount} ${fromCurrency} → ${converted} USD (rate: ${rate})`);
-    return converted;
-  } catch (err) {
-    addLog('order_import', 'error', `Currency conversion failed for ${amount} ${fromCurrency}: ${err.message} — using original amount`);
-    return amount;
-  }
-}
-
 async function getVariantBySkuOrEan(sku, ean) {
   try {
     addLog('order_import', 'info', `Querying Shopify for SKU: ${sku}`);
@@ -111,13 +91,22 @@ async function createShopifyOrder(order) {
     ? order.ORDER_CHANNEL_DATA.CHANNEL_DATA
     : [order.ORDER_CHANNEL_DATA?.CHANNEL_DATA];
 
-  // Read currency from 'currency' field first, fall back to 'merchantOrderCurrency', then USD
+  // Read currency directly from TB.One — no conversion, pass as-is to Shopify
   const tbCurrency =
     channelDataArr.find(d => d?.['@_key'] === 'currency')?.['#text'] ||
     channelDataArr.find(d => d?.['@_key'] === 'merchantOrderCurrency')?.['#text'] ||
-    'USD';
+    null;
 
-  addLog('order_import', 'info', `Order currency from TB.One: ${tbCurrency}`);
+  // Reject order if no currency found — we must not guess
+  if (!tbCurrency) {
+    addLog('order_import', 'error',
+      `Order ${orderData.CHANNEL_NO} rejected — no currency field in TB.One XML. ` +
+      `TB.One must include "currency" or "merchantOrderCurrency" in ORDER_CHANNEL_DATA.`
+    );
+    return null;
+  }
+
+  addLog('order_import', 'info', `Order currency: ${tbCurrency}`);
 
   const lineItems = [];
 
@@ -133,18 +122,15 @@ async function createShopifyOrder(order) {
       : item.ITEM_PRICE;
 
     const quantity = parseInt(item.QUANTITY);
-    const originalAmount = parseFloat(itemPrice || '0.00');
-
-    // Convert item price to USD
-    const usdAmount = await convertToUSD(originalAmount, tbCurrency);
+    const amount = parseFloat(itemPrice || '0.00');
 
     lineItems.push({
       variantId: variant.id,
       quantity,
       priceSet: {
         shopMoney: {
-          amount: String(usdAmount.toFixed(2)),
-          currencyCode: 'USD'
+          amount: String(amount.toFixed(2)),
+          currencyCode: tbCurrency
         }
       }
     });
@@ -155,9 +141,7 @@ async function createShopifyOrder(order) {
     return null;
   }
 
-  // Convert shipping price to USD
-  const originalShipping = parseFloat(order.SHIPMENT?.PRICE || '0.00');
-  const shippingPriceUSD = await convertToUSD(originalShipping, tbCurrency);
+  const shippingPrice = parseFloat(order.SHIPMENT?.PRICE || '0.00');
 
   const mutation = `
     mutation orderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
@@ -166,7 +150,7 @@ async function createShopifyOrder(order) {
         order {
           id
           name
-          totalPriceSet { shopMoney { amount } }
+          totalPriceSet { shopMoney { amount currencyCode } }
         }
       }
     }
@@ -175,7 +159,7 @@ async function createShopifyOrder(order) {
   const variables = {
     order: {
       lineItems,
-      currency: 'USD',
+      currency: tbCurrency,
       shippingAddress: {
         firstName: shipTo.FIRSTNAME,
         lastName: shipTo.LASTNAME,
@@ -193,15 +177,15 @@ async function createShopifyOrder(order) {
         countryCode: sellTo.COUNTRY
       },
       email: sellTo.EMAIL,
-      note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO} | Original currency: ${tbCurrency}`,
+      note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO} | Currency: ${tbCurrency}`,
       tags: ['tradebyte', 'farfetch', orderData.CHANNEL_SIGN],
       shippingLines: [
         {
           title: 'Farfetch Shipping',
           priceSet: {
             shopMoney: {
-              amount: String(shippingPriceUSD.toFixed(2)),
-              currencyCode: 'USD'
+              amount: String(shippingPrice.toFixed(2)),
+              currencyCode: tbCurrency
             }
           }
         }
@@ -227,7 +211,7 @@ async function createShopifyOrder(order) {
         },
         {
           namespace: 'tradebyte',
-          key: 'original_currency',
+          key: 'currency',
           value: tbCurrency,
           type: 'single_line_text_field'
         }
@@ -251,7 +235,7 @@ async function createShopifyOrder(order) {
     const shopifyOrder = result.data?.orderCreate?.order;
     if (!shopifyOrder) return null;
 
-    // Mark as paid with retry — Farfetch only sends pre-paid orders
+    // Mark as paid — Farfetch only sends pre-paid orders
     await markOrderAsPaid(shopifyOrder.id, shopifyOrder.name);
 
     return shopifyOrder;
@@ -309,7 +293,8 @@ async function importOrders() {
           addLog('order_import', 'success', `Order created: ${shopifyOrder.name}`, {
             shopify_order_id: shopifyOrder.id,
             order_name: shopifyOrder.name,
-            total_price: shopifyOrder.totalPriceSet?.shopMoney?.amount
+            total_price: shopifyOrder.totalPriceSet?.shopMoney?.amount,
+            currency: shopifyOrder.totalPriceSet?.shopMoney?.currencyCode
           });
         } else {
           anyFailed = true;
