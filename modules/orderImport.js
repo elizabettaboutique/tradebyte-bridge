@@ -25,15 +25,32 @@ async function shopifyRequest(query, variables) {
 }
 
 // ---------------------------------------------------------------------------
-// Read currency from item SERVICES — TB.One sends it as:
-// ITEMS > ITEM > SERVICES > SERVICE[CODE=CURRENCY] > DESC
+// Read a value from a CHANNEL_DATA array by key
 // ---------------------------------------------------------------------------
-function getCurrencyFromItem(item) {
-  const services = item?.SERVICES?.SERVICE;
-  if (!services) return null;
-  const serviceArr = Array.isArray(services) ? services : [services];
-  const currencyService = serviceArr.find(s => s.CODE === 'CURRENCY');
-  return currencyService?.DESC || null;
+function getChannelDataValue(channelData, key) {
+  if (!channelData) return null;
+  const arr = Array.isArray(channelData) ? channelData : [channelData];
+  const entry = arr.find(d => d?.['@_key'] === key);
+  return entry?.['#text'] ? String(entry['#text']) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Read merchantOrderProductBasePrice from ORDER_ITEM_CHANNEL_DATA.
+// Falls back to ITEM_PRICE if not found.
+// ---------------------------------------------------------------------------
+function getItemPrice(item) {
+  const channelData = item?.ORDER_ITEM_CHANNEL_DATA?.CHANNEL_DATA;
+  if (channelData) {
+    const basePrice = getChannelDataValue(channelData, 'merchantOrderProductBasePrice');
+    if (basePrice) {
+      return parseFloat(basePrice);
+    }
+  }
+  // Fallback to ITEM_PRICE
+  const rawPrice = typeof item.ITEM_PRICE === 'object'
+    ? item.ITEM_PRICE['#text']
+    : item.ITEM_PRICE;
+  return parseFloat(rawPrice || '0.00');
 }
 
 async function getVariantBySkuOrEan(sku, ean) {
@@ -99,14 +116,20 @@ async function createShopifyOrder(order) {
   const sellTo = order.SELL_TO;
   const items = Array.isArray(order.ITEMS.ITEM) ? order.ITEMS.ITEM : [order.ITEMS.ITEM];
 
-  // Read currency from first item's SERVICES — applies to the whole order
-  const firstItem = items[0];
-  const tbCurrency = getCurrencyFromItem(firstItem) || 'USD';
+  // ---------------------------------------------------------------------------
+  // Currency: use merchantOrderCurrency (USD) from ORDER_CHANNEL_DATA.
+  // The prices in ORDER_ITEM_CHANNEL_DATA are always in merchantOrderCurrency.
+  // Fall back to 'currency' field, then SERVICES CURRENCY, then 'USD'.
+  // ---------------------------------------------------------------------------
+  const orderChannelData = order.ORDER_CHANNEL_DATA?.CHANNEL_DATA;
+  const tbCurrency =
+    getChannelDataValue(orderChannelData, 'merchantOrderCurrency') ||
+    getChannelDataValue(orderChannelData, 'currency') ||
+    'USD';
 
-  if (!getCurrencyFromItem(firstItem)) {
+  if (!getChannelDataValue(orderChannelData, 'merchantOrderCurrency')) {
     addLog('order_import', 'error',
-      `No currency found in SERVICES for order ${orderData.CHANNEL_NO} — falling back to USD. ` +
-      `TB.One should include a SERVICE with CODE=CURRENCY in each ITEM.`
+      `No merchantOrderCurrency found for order ${orderData.CHANNEL_NO} — falling back to: ${tbCurrency}`
     );
   }
 
@@ -121,12 +144,13 @@ async function createShopifyOrder(order) {
       continue;
     }
 
-    const itemPrice = typeof item.ITEM_PRICE === 'object'
-      ? item.ITEM_PRICE['#text']
-      : item.ITEM_PRICE;
-
     const quantity = parseInt(item.QUANTITY);
-    const amount = parseFloat(itemPrice || '0.00');
+    // ✅ Use merchantOrderProductBasePrice (retail USD price), fall back to ITEM_PRICE
+    const amount = getItemPrice(item);
+
+    addLog('order_import', 'info',
+      `Item price: ${amount} ${tbCurrency} (SKU: ${item.SKU})`
+    );
 
     lineItems.push({
       variantId: variant.id,
@@ -164,25 +188,31 @@ async function createShopifyOrder(order) {
     order: {
       lineItems,
       currency: tbCurrency,
+      // ✅ Full address mapping including STATE and STREET_EXTENSION
       shippingAddress: {
         firstName: shipTo.FIRSTNAME,
         lastName: shipTo.LASTNAME,
         address1: shipTo.STREET_NO,
+        address2: shipTo.STREET_EXTENSION || '',
         zip: String(shipTo.ZIP),
         city: shipTo.CITY,
+        province: shipTo.STATE || '',
         countryCode: shipTo.COUNTRY
       },
       billingAddress: {
         firstName: sellTo.FIRSTNAME,
         lastName: sellTo.LASTNAME,
         address1: sellTo.STREET_NO,
+        address2: sellTo.STREET_EXTENSION || '',
         zip: String(sellTo.ZIP),
         city: sellTo.CITY,
+        province: sellTo.STATE || '',
         countryCode: sellTo.COUNTRY
       },
       email: sellTo.EMAIL,
       note: `TB.One Order | Channel: ${orderData.CHANNEL_SIGN} | Channel Order: ${orderData.CHANNEL_NO} | Currency: ${tbCurrency}`,
       tags: ['tradebyte', 'farfetch', orderData.CHANNEL_SIGN],
+      // ✅ Always include a shipping line to prevent "shipping not required"
       shippingLines: [
         {
           title: 'Farfetch Shipping',
