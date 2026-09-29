@@ -155,6 +155,7 @@ async function createShopifyOrder(order) {
     lineItems.push({
       variantId: variant.id,
       quantity,
+      requiresShipping: true,
       priceSet: {
         shopMoney: {
           amount: String(amount.toFixed(2)),
