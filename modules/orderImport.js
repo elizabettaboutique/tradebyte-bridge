@@ -136,6 +136,8 @@ async function createShopifyOrder(order) {
   addLog('order_import', 'info', `Order currency: ${tbCurrency}`);
 
   const lineItems = [];
+  const tbItems = [];
+  const seenSkus = new Set();
 
   for (const item of items) {
     const variant = await getVariantBySkuOrEan(item.SKU, item.EAN);
@@ -152,6 +154,29 @@ async function createShopifyOrder(order) {
       `Item price: ${amount} ${tbCurrency} (SKU: ${item.SKU})`
     );
 
+        const tbItemId = Number(item.TB_ID);
+    const sku = String(item.SKU || '').trim();
+
+    if (!Number.isSafeInteger(tbItemId) || tbItemId <= 0 || !sku) {
+      addLog('order_import', 'error',
+        `Missing valid TB.One item ID or SKU for order ${orderData.CHANNEL_NO}; skipping entire order`
+      );
+      return null;
+    }
+
+    // This mapping uses SKU to match a later Shopify fulfillment to its
+    // TB.One item. Never guess when two TB.One items share the same SKU.
+    if (seenSkus.has(sku)) {
+      addLog('order_import', 'error',
+        `Duplicate SKU ${sku} in TB.One order ${orderData.CHANNEL_NO}; skipping entire order because shipment items would be ambiguous`
+      );
+      return null;
+    }
+
+    seenSkus.add(sku);
+    tbItems.push({ sku, tbItemId });
+
+    
     lineItems.push({
       variantId: variant.id,
       quantity,
@@ -185,6 +210,17 @@ async function createShopifyOrder(order) {
     }
   `;
 
+  if (!Number.isSafeInteger(Number(orderData.TB_ID)) ||
+      Number(orderData.TB_ID) <= 0) {
+    addLog('order_import', 'error',
+      `Missing valid TB.One order ID for ${orderData.CHANNEL_NO}; skipping`
+    );
+    return null;
+  }
+
+
+
+  
   const variables = {
     order: {
       lineItems,
@@ -229,8 +265,14 @@ async function createShopifyOrder(order) {
         {
           namespace: 'tradebyte',
           key: 'tb_id',
-          value: String(orderData.TB_ID || orderData.CHANNEL_NO),
+          value: String(orderData.TB_ID),
           type: 'single_line_text_field'
+        },
+         {
+          namespace: 'tradebyte',
+          key: 'tb_items',
+          value: JSON.stringify(tbItems),
+          type: 'json'
         },
         {
           namespace: 'tradebyte',
