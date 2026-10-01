@@ -2,7 +2,24 @@ const SftpClient = require('ssh2-sftp-client');
 const { XMLParser } = require('fast-xml-parser');
 const { addLog } = require('../logger');
 
-const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-01/graphql.json`;
+const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-04/graphql.json`;
+
+
+const API_VERSION = 'https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-04/graphql.json';
+if (!API_VERSION) {
+  throw new Error('Set SHOPIFY_API_VERSION to a currently supported Shopify API version');
+}
+
+// const SHOPIFY_URL =
+//   `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`;
+const SHOPIFY_REST_BASE =
+  `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/${API_VERSION}`;
+
+const TEXAS_LOCATION_ID = 12786437;
+
+
+
+
 const SFTP_OUT = process.env.TB_SFTP_OUT || '/out/';
 const SFTP_ARCHIV = process.env.TB_SFTP_ARCHIV || '/archiv/';
 
@@ -23,6 +40,98 @@ async function shopifyRequest(query, variables) {
   }
   return json;
 }
+
+
+ async function shopifyRestRequest(path, options = {}) {
+  const response = await fetch(`${SHOPIFY_REST_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN,
+      ...options.headers
+    }
+  });
+
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { rawResponse: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Shopify REST request failed (${response.status}): ${text.slice(0, 1000)}`
+    );
+  }
+
+  return body;
+}
+
+async function moveTradebyteOrderToTexas(orderGid, orderName) {
+  const orderId = String(orderGid).split('/').pop();
+
+  if (!/^\d+$/.test(orderId)) {
+    throw new Error(`Invalid Shopify order ID for ${orderName}`);
+  }
+
+  const result = await shopifyRestRequest(
+    `/orders/${orderId}/fulfillment_orders.json`
+  );
+
+  const fulfillmentOrders = result.fulfillment_orders;
+  if (!Array.isArray(fulfillmentOrders) || fulfillmentOrders.length === 0) {
+    throw new Error(`No fulfillment orders returned for ${orderName}`);
+  }
+
+  const activeOrders = fulfillmentOrders.filter(fo =>
+    !['closed', 'cancelled'].includes(String(fo.status).toLowerCase())
+  );
+
+  if (activeOrders.length === 0) {
+    throw new Error(`No open fulfillment orders to assign for ${orderName}`);
+  }
+
+  for (const fulfillmentOrder of activeOrders) {
+    if (Number(fulfillmentOrder.assigned_location_id) === TEXAS_LOCATION_ID) {
+      continue;
+    }
+
+    if (String(fulfillmentOrder.status).toLowerCase() !== 'open') {
+      throw new Error(
+        `Fulfillment order ${fulfillmentOrder.id} for ${orderName} is ` +
+        `${fulfillmentOrder.status}, not open; refusing to move it`
+      );
+    }
+
+    const moveResult = await shopifyRestRequest(
+      `/fulfillment_orders/${fulfillmentOrder.id}/move.json`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          fulfillment_order: {
+            new_location_id: TEXAS_LOCATION_ID
+          }
+        })
+      }
+    );
+
+    const moved = moveResult.moved_fulfillment_order;
+    if (
+      !moved ||
+      Number(moved.assigned_location_id) !== TEXAS_LOCATION_ID
+    ) {
+      throw new Error(
+        `Shopify did not confirm Texas assignment for ${orderName}, ` +
+        `fulfillment order ${fulfillmentOrder.id}`
+      );
+    }
+  }
+
+  addLog('order_import', 'success', `Assigned ${orderName} fulfillment to Texas`);
+}
+
 
 // ---------------------------------------------------------------------------
 // Read a value from a CHANNEL_DATA array by key
@@ -311,6 +420,28 @@ async function createShopifyOrder(order) {
 
     const shopifyOrder = result.data?.orderCreate?.order;
     if (!shopifyOrder) return null;
+
+
+    let texasMoveSucceeded = false;
+
+try {
+  await moveTradebyteOrderToTexas(shopifyOrder.id, shopifyOrder.name);
+  texasMoveSucceeded = true;
+} catch (err) {
+  addLog(
+    'order_import',
+    'error',
+    `CRITICAL: ${shopifyOrder.name} was created, but Texas assignment failed: ${err.message}`
+  );
+}
+
+// Still mark the prepaid order paid, even if the location move needs attention.
+await markOrderAsPaid(shopifyOrder.id, shopifyOrder.name);
+
+if (!texasMoveSucceeded) {
+  return null;
+}
+
 
     // Mark as paid — Farfetch only sends pre-paid orders
     await markOrderAsPaid(shopifyOrder.id, shopifyOrder.name);
