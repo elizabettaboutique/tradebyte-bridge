@@ -60,11 +60,17 @@ async function shopifyRequest(query, variables) {
     body = { rawResponse: text };
   }
 
-  if (!response.ok) {
-    throw new Error(
-      `Shopify REST request failed (${response.status}): ${text.slice(0, 1000)}`
-    );
-  }
+ const method = (options.method || 'GET').toUpperCase();
+
+// Keep the existing fetch and response handling.
+
+if (!response.ok) {
+  throw new Error(
+    `Shopify REST ${method} ${path} failed (${response.status}): ` +
+    text.slice(0, 1000)
+  );
+}
+
 
   return body;
 }
