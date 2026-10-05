@@ -5,7 +5,7 @@ const { addLog } = require('../logger');
 const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-04/graphql.json`;
 
 
-const API_VERSION = '2025-04';
+const API_VERSION = '2026-07';
 if (!API_VERSION) {
   throw new Error('Set SHOPIFY_API_VERSION to a currently supported Shopify API version');
 }
