@@ -2,20 +2,37 @@ const SftpClient = require('ssh2-sftp-client');
 const { XMLParser } = require('fast-xml-parser');
 const { addLog } = require('../logger');
 
-const SHOPIFY_URL = `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2025-04/graphql.json`;
+const API_VERSION = process.env.SHOPIFY_API_VERSION || '2026-07';
 
-
-const API_VERSION = '2026-07';
-if (!API_VERSION) {
-  throw new Error('Set SHOPIFY_API_VERSION to a currently supported Shopify API version');
+if (!/^\d{4}-(01|04|07|10)$/.test(API_VERSION)) {
+  throw new Error(
+    'SHOPIFY_API_VERSION must be a version string such as 2026-07'
+  );
 }
 
-// const SHOPIFY_URL =
-//   `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`;
+const SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN;
+
+if (!SHOP_DOMAIN) {
+  throw new Error('SHOPIFY_SHOP_DOMAIN is required');
+}
+
+const SHOPIFY_URL =
+  `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`;
+
 const SHOPIFY_REST_BASE =
-  `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/${API_VERSION}`;
+  `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}`;
 
 const TEXAS_LOCATION_ID = 12786437;
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function manualReviewError(message) {
+  const error = new Error(message);
+  error.manualReview = true;
+  return error;
+}
 
 
 
@@ -42,76 +59,183 @@ async function shopifyRequest(query, variables) {
 }
 
 
- async function shopifyRestRequest(path, options = {}) {
-  const response = await fetch(`${SHOPIFY_REST_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN,
-      ...options.headers
+async function shopifyRestRequest(resourcePath, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+
+  const response = await fetch(
+    `${SHOPIFY_REST_BASE}${resourcePath}`,
+    {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token':
+          process.env.SHOPIFY_ADMIN_API_TOKEN,
+        ...options.headers
+      },
+      signal: AbortSignal.timeout(30000)
     }
-  });
+  );
 
   const text = await response.text();
-  let body = {};
-  try {
-    body = text ? JSON.parse(text) : {};
-  } catch {
-    body = { rawResponse: text };
+
+  if (!response.ok) {
+    const error = new Error(
+      `Shopify REST ${method} ${resourcePath} failed ` +
+      `(${response.status}): ${text.slice(0, 1000)}`
+    );
+
+    error.httpStatus = response.status;
+    error.manualReview = response.status === 422;
+    throw error;
   }
 
- const method = (options.method || 'GET').toUpperCase();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(
+      `Invalid JSON from Shopify REST ${method} ${resourcePath}`
+    );
+  }
+}
 
-// Keep the existing fetch and response handling.
 
-if (!response.ok) {
-  throw new Error(
-    `Shopify REST ${method} ${path} failed (${response.status}): ` +
-    text.slice(0, 1000)
+
+// ---------------------------------------------------------------------------
+// Wait for Shopify to produce fulfillment orders.
+// Bounded retries: six attempts with 31 seconds of backoff in total.
+// Request durations can add to that time.
+// ---------------------------------------------------------------------------
+async function getRoutedFulfillmentOrders(orderId, orderName) {
+  const delays = [0, 1000, 2000, 4000, 8000, 16000];
+  const retryableStatuses = [429, 500, 502, 503, 504];
+
+  let lastError;
+
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    if (delays[attempt]) {
+      await wait(delays[attempt]);
+    }
+
+    try {
+      const result = await shopifyRestRequest(
+        `/orders/${orderId}/fulfillment_orders.json`
+      );
+
+      if (!Array.isArray(result.fulfillment_orders)) {
+        throw new Error(
+          `Invalid fulfillment-order response for ${orderName}`
+        );
+      }
+
+      if (result.fulfillment_orders.length > 0) {
+        return result.fulfillment_orders;
+      }
+
+      lastError = new Error(
+        `No fulfillment orders returned yet for ${orderName}`
+      );
+
+      addLog(
+        'order_import',
+        'info',
+        `Waiting for routing for ${orderName}; ` +
+        `attempt ${attempt + 1}/${delays.length}`,
+        { shopify_order_id: orderId }
+      );
+    } catch (error) {
+      lastError = error;
+
+      // Do not repeatedly retry invalid URLs, access failures, or 422s.
+      if (!retryableStatuses.includes(error.httpStatus)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError || new Error(
+    `Routing lookup exhausted retries for ${orderName}`
+  );
+}
+
+function getActiveFulfillmentOrders(fulfillmentOrders) {
+  return fulfillmentOrders.filter(fulfillmentOrder =>
+    !['closed', 'cancelled'].includes(
+      String(fulfillmentOrder.status).toLowerCase()
+    )
   );
 }
 
 
-  return body;
-}
 
+// ---------------------------------------------------------------------------
+// Assign this Tradebyte order's active fulfillment orders to Texas.
+// Call only for orders identified as Tradebyte imports.
+// ---------------------------------------------------------------------------
 async function moveTradebyteOrderToTexas(orderGid, orderName) {
   const orderId = String(orderGid).split('/').pop();
 
   if (!/^\d+$/.test(orderId)) {
-    throw new Error(`Invalid Shopify order ID for ${orderName}`);
+    throw manualReviewError(
+      `Invalid Shopify order ID for ${orderName}`
+    );
   }
 
-  const result = await shopifyRestRequest(
-    `/orders/${orderId}/fulfillment_orders.json`
+  const fulfillmentOrders = await getRoutedFulfillmentOrders(
+    orderId,
+    orderName
   );
 
-  const fulfillmentOrders = result.fulfillment_orders;
-  if (!Array.isArray(fulfillmentOrders) || fulfillmentOrders.length === 0) {
-    throw new Error(`No fulfillment orders returned for ${orderName}`);
-  }
-
-  const activeOrders = fulfillmentOrders.filter(fo =>
-    !['closed', 'cancelled'].includes(String(fo.status).toLowerCase())
+  const activeOrders = getActiveFulfillmentOrders(
+    fulfillmentOrders
   );
 
   if (activeOrders.length === 0) {
-    throw new Error(`No open fulfillment orders to assign for ${orderName}`);
+    throw manualReviewError(
+      `No active fulfillment orders for ${orderName}; ` +
+      'check its fulfillment history'
+    );
   }
 
+  // Check every required move before moving any fulfillment order.
   for (const fulfillmentOrder of activeOrders) {
-    if (Number(fulfillmentOrder.assigned_location_id) === TEXAS_LOCATION_ID) {
+    if (
+      Number(fulfillmentOrder.assigned_location_id) ===
+      TEXAS_LOCATION_ID
+    ) {
       continue;
     }
 
-    if (String(fulfillmentOrder.status).toLowerCase() !== 'open') {
-      throw new Error(
-        `Fulfillment order ${fulfillmentOrder.id} for ${orderName} is ` +
-        `${fulfillmentOrder.status}, not open; refusing to move it`
+    const status = String(
+      fulfillmentOrder.status || ''
+    ).toLowerCase();
+
+    const requestStatus = String(
+      fulfillmentOrder.request_status || ''
+    ).toLowerCase();
+
+    // Conservative policy: unsupported or unknown request states
+    // require review instead of an automatic move.
+    if (
+      status !== 'open' ||
+      !['unsubmitted', 'rejected'].includes(requestStatus)
+    ) {
+      throw manualReviewError(
+        `Cannot automatically move fulfillment order ` +
+        `${fulfillmentOrder.id} for ${orderName}: ` +
+        `status=${status}, request_status=${requestStatus}`
       );
     }
+  }
 
-    const moveResult = await shopifyRestRequest(
+  for (const fulfillmentOrder of activeOrders) {
+    if (
+      Number(fulfillmentOrder.assigned_location_id) ===
+      TEXAS_LOCATION_ID
+    ) {
+      continue;
+    }
+
+    await shopifyRestRequest(
       `/fulfillment_orders/${fulfillmentOrder.id}/move.json`,
       {
         method: 'POST',
@@ -122,20 +246,39 @@ async function moveTradebyteOrderToTexas(orderGid, orderName) {
         })
       }
     );
-
-    const moved = moveResult.moved_fulfillment_order;
-    if (
-      !moved ||
-      Number(moved.assigned_location_id) !== TEXAS_LOCATION_ID
-    ) {
-      throw new Error(
-        `Shopify did not confirm Texas assignment for ${orderName}, ` +
-        `fulfillment order ${fulfillmentOrder.id}`
-      );
-    }
   }
 
-  addLog('order_import', 'success', `Assigned ${orderName} fulfillment to Texas`);
+  // Re-read the order because moves can change fulfillment-order records.
+  const updatedOrders = await getRoutedFulfillmentOrders(
+    orderId,
+    orderName
+  );
+
+  const updatedActiveOrders = getActiveFulfillmentOrders(
+    updatedOrders
+  );
+
+  const texasConfirmed =
+    updatedActiveOrders.length > 0 &&
+    updatedActiveOrders.every(fulfillmentOrder =>
+      Number(fulfillmentOrder.assigned_location_id) ===
+      TEXAS_LOCATION_ID
+    );
+
+  if (!texasConfirmed) {
+    throw new Error(
+      `Texas assignment was not confirmed for ${orderName}`
+    );
+  }
+
+  addLog(
+    'order_import',
+    'success',
+    `Confirmed ${orderName} fulfillment at Texas`,
+    { shopify_order_id: orderGid }
+  );
+
+  return true;
 }
 
 
