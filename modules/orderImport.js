@@ -10,6 +10,7 @@ if (!/^\d{4}-(01|04|07|10)$/.test(API_VERSION)) {
   );
 }
 
+
 const SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN;
 
 if (!SHOP_DOMAIN) {
