@@ -492,7 +492,7 @@ async function createShopifyOrder(order) {
         address2: shipTo.STREET_EXTENSION || '',
         zip: String(shipTo.ZIP),
         city: shipTo.CITY,
-        province: shipTo.STATE || '',
+        province: String(shipTo.STATE ?? ''),
         countryCode: shipTo.COUNTRY
       },
       billingAddress: {
@@ -502,7 +502,7 @@ async function createShopifyOrder(order) {
         address2: sellTo.STREET_EXTENSION || '',
         zip: String(sellTo.ZIP),
         city: sellTo.CITY,
-        province: sellTo.STATE || '',
+        province: String(sellTo.STATE ?? ''),
         countryCode: sellTo.COUNTRY
       },
       email: sellTo.EMAIL,
