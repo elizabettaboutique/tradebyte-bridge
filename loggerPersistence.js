@@ -1,8 +1,8 @@
 // logger.js - Tradebyte sync logger with Shopify metaobject persistence
 
 const SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN;
-const ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
-const API_VERSION = '2026-07';
+//const ADMIN_API_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
+const API_VERSION = process.env.SHOPIFY_API_VERSION || '2026-07';
 const METAOBJECT_TYPE = 'tradebyte_log';
 const MAX_STORED_LOGS = 500;
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -17,22 +17,33 @@ function getLogs() {
 }
 
 function addLog(module, status, message, metadata = {}) {
+  if (module && typeof module === 'object') {
+    const input = module;
+    module = input.module;
+    status = input.status;
+    message = input.message;
+    metadata = input.metadata ?? input.meta ?? {};
+  }
   const entry = {
-    module: module,
-    status: status,
-    message: message,
-    metadata: metadata,
-    timestamp: new Date().toISOString(),
+    module: module || 'unknown',
+    status: status || 'info',
+    message: message || '',
+    metadata,
+    timestamp: new Date().toISOString()
   };
-
   logs.push(entry);
-
-console.log(`status: ${status} message: ${message} meta: ${JSON.stringify(metadata)}`);
-
-  
-  // Fire and forget: persistence must never block or crash the caller.
-  persistLog(entry).catch(function () {});
-
+  if (logs.length > MAX_STORED_LOGS) {
+    logs.splice(0, logs.length - MAX_STORED_LOGS);
+  }
+  console.log(JSON.stringify({
+    timestamp: entry.timestamp,
+    module: entry.module,
+    status: entry.status,
+    message: entry.message
+  }));
+  persistLog(entry).catch(error => {
+    console.error('[tradebyte_logger] Persistence failed:', error.message);
+  });
   return entry;
 }
 
@@ -74,9 +85,11 @@ const DELETE_LOG_MUTATION = `mutation DeleteTradebyteLog($id: ID!) {
 }`;
 
 async function shopifyGraphQL(query, variables) {
-  if (!SHOP_DOMAIN || !ADMIN_API_TOKEN) {
-    throw new Error('SHOPIFY_SHOP_DOMAIN and SHOPIFY_ADMIN_API_TOKEN must be set');
-  }
+  const token = process.env.SHOPIFY_ADMIN_API_TOKEN;
+    if (!SHOP_DOMAIN || !token) {
+      throw new Error('Logger is missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_API_TOKEN');
+    }
+
 
   const endpoint = 'https://' + SHOP_DOMAIN + '/admin/api/' + API_VERSION + '/graphql.json';
 
@@ -84,7 +97,7 @@ async function shopifyGraphQL(query, variables) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': ADMIN_API_TOKEN,
+      'X-Shopify-Access-Token': token,
     },
     body: JSON.stringify({ query: query, variables: variables }),
   });
@@ -187,19 +200,21 @@ async function pruneOldLogs() {
 
 // Run cleanup once on startup, then once a day. Failures are swallowed so a
 // logging problem can never take the sync process down.
-pruneOldLogs().catch(function () {});
+// pruneOldLogs().catch(function () {});
 
-const pruneTimer = setInterval(function () {
-  pruneOldLogs().catch(function () {});
-}, PRUNE_INTERVAL_MS);
+// const pruneTimer = setInterval(function () {
+//  pruneOldLogs().catch(function () {});
+// }, PRUNE_INTERVAL_MS);
 
-if (typeof pruneTimer.unref === 'function') {
-  pruneTimer.unref();
-}
+// if (typeof pruneTimer.unref === 'function') {
+//  pruneTimer.unref();
+// }
 
 module.exports = {
-  logs: logs,
-  getLogs: getLogs,
-  addLog: addLog,
-  pruneOldLogs: pruneOldLogs,
+  logs,
+  getLogs,
+  addLog,
+  persistLog,
+  pruneOldLogs
 };
+
