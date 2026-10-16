@@ -29,6 +29,15 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function tradebyteLogContext(order) {
+  return {
+    tb_order_id: String(order?.ORDER_DATA?.TB_ID ?? ''),
+    channel_no: String(order?.ORDER_DATA?.CHANNEL_NO ?? ''),
+    channel_sign: String(order?.ORDER_DATA?.CHANNEL_SIGN ?? '')
+  };
+}
+
+
 function manualReviewError(message) {
   const error = new Error(message);
   error.manualReview = true;
@@ -42,22 +51,99 @@ const SFTP_OUT = process.env.TB_SFTP_OUT || '/out/';
 const SFTP_ARCHIV = process.env.TB_SFTP_ARCHIV || '/archiv/';
 
 async function shopifyRequest(query, variables) {
-  const res = await fetch(SHOPIFY_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_API_TOKEN
-    },
-    body: JSON.stringify({ query, variables })
-  });
-  const json = await res.json();
-  if (!res.ok || json.errors) {
-    addLog('order_import', 'error', 'Shopify GraphQL/API error', {
-      errors: json.errors || { httpStatus: res.status, body: json }
+  const orderInput = variables?.order;
+
+  const fieldValue = key =>
+    orderInput?.metafields?.find(field =>
+      field.namespace === 'tradebyte' &&
+      field.key === key
+    )?.value;
+
+  const isCreation = Boolean(orderInput);
+
+  const context = {
+    tb_order_id: fieldValue('tb_id') || '',
+    channel_no: fieldValue('channel_no') || '',
+    channel_sign: fieldValue('channel_sign') || ''
+  };
+
+  let res;
+  let json;
+
+  try {
+    res = await fetch(SHOPIFY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token':
+          process.env.SHOPIFY_ADMIN_API_TOKEN
+      },
+      body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(30000)
     });
+
+    json = await res.json();
+  } catch (error) {
+    addLog(
+      'order_import',
+      'error',
+      'Shopify request did not return a readable response',
+      {
+        ...context,
+        event: isCreation
+          ? 'order_create_uncertain'
+          : 'shopify_api_error',
+        stage: isCreation ? 'create' : 'unknown',
+        creation_outcome: 'unconfirmed',
+        http_status: res?.status ?? null,
+        error: error.message
+      }
+    );
+
+    throw error;
   }
+
+  if (!res.ok || json.errors?.length) {
+    const errors = json.errors || [];
+
+    const inputRejected =
+      isCreation &&
+      !json.data &&
+      errors.length > 0 &&
+      errors.every(error =>
+        /^Variable .* was provided invalid value/.test(
+          error.message || ''
+        )
+      );
+
+    addLog(
+      'order_import',
+      'error',
+      isCreation
+        ? 'Shopify order creation request failed'
+        : 'Shopify GraphQL/API error',
+      {
+        ...context,
+        event: inputRejected
+          ? 'order_create_failed'
+          : isCreation
+            ? 'order_create_uncertain'
+            : 'shopify_api_error',
+        stage: isCreation ? 'create' : 'unknown',
+        creation_outcome: inputRejected
+          ? 'rejected'
+          : 'unconfirmed',
+        http_status: res.status,
+        error:
+          errors.map(error => error.message).join('; ') ||
+          `HTTP ${res.status}`
+      }
+    );
+  }
+
   return json;
 }
+
 
 
 async function shopifyRestRequest(resourcePath, options = {}) {
@@ -562,15 +648,43 @@ async function createShopifyOrder(order) {
     const result = await shopifyRequest(mutation, variables);
 
     if (result.data?.orderCreate?.userErrors?.length > 0) {
-      addLog('order_import', 'error', 'Shopify userErrors', {
-        errors: result.data.orderCreate.userErrors
-      });
+      addLog(
+  'order_import',
+  'error',
+  'Shopify reported order creation errors',
+  {
+    ...tradebyteLogContext(order),
+    event: result.data.orderCreate.order
+      ? 'order_create_uncertain'
+      : 'order_create_failed',
+    stage: 'create',
+    creation_outcome: result.data.orderCreate.order
+      ? 'unconfirmed'
+      : 'rejected',
+    error: result.data.orderCreate.userErrors
+      .map(error => error.message)
+      .join('; ')
+  }
+);
+
       return null;
     }
 
     const shopifyOrder = result.data?.orderCreate?.order;
     if (!shopifyOrder) return null;
 
+addLog(
+  'order_import',
+  'success',
+  `Shopify created ${shopifyOrder.name}`,
+  {
+    ...tradebyteLogContext(order),
+    event: 'order_created',
+    stage: 'create',
+    shopify_order_id: shopifyOrder.id,
+    order_name: shopifyOrder.name
+  }
+);
 
     let texasMoveSucceeded = false;
 
@@ -578,11 +692,22 @@ try {
   await moveTradebyteOrderToTexas(shopifyOrder.id, shopifyOrder.name);
   texasMoveSucceeded = true;
 } catch (err) {
-  addLog(
-    'order_import',
-    'error',
-    `CRITICAL: ${shopifyOrder.name} was created, but Texas assignment failed: ${err.message}`
-  );
+ addLog(
+  'order_import',
+  'error',
+  `${shopifyOrder.name} was created, but Texas assignment failed`,
+  {
+    ...tradebyteLogContext(order),
+    event: 'order_workflow_error',
+    stage: 'assign_texas',
+    creation_outcome: 'created',
+    shopify_order_id: shopifyOrder.id,
+    order_name: shopifyOrder.name,
+    error: err.message,
+    manual_review: Boolean(err.manualReview)
+  }
+);
+
 }
 
 // Still mark the prepaid order paid, even if the location move needs attention.
@@ -598,7 +723,19 @@ if (!texasMoveSucceeded) {
 
     return shopifyOrder;
   } catch (err) {
-    addLog('order_import', 'error', `Mutation exception: ${err.message}`);
+    addLog(
+  'order_import',
+  'error',
+  `Order workflow exception: ${err.message}`,
+  {
+    ...tradebyteLogContext(order),
+    event: 'order_workflow_error',
+    stage: 'unknown',
+    creation_outcome: 'unconfirmed',
+    error: err.message
+  }
+);
+
     return null;
   }
 }
